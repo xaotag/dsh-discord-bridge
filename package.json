@@ -1,0 +1,32 @@
+{
+  "name": "@local/dsh-discord-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Discord bot bridge for DeepSeek Harness with per-conversation DSH sessions and isolation. Discord 消息直连 DSH，每个频道/Thread 独立可恢复 Session。",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "discord.js": "14.27.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

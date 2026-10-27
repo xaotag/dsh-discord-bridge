@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Runtime state and secrets — never commit these
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+state.json
+*.log
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp

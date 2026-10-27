@@ -1,0 +1,14 @@
+# dsh-discord-bridge bundle layer.
+# Enable by adding "@local/dsh-discord-bridge" to the profile's dsh.profile.bundles.
+- insert:
+    - id: dsh-discord-bridge
+      name: '@local/dsh-discord-bridge'
+      config:
+        tokenRef: DSH_DISCORD_BOT_TOKEN
+        ownerId: !!js process.env.DSH_DISCORD_OWNER_ID
+        workspace: !!js process.env.DSH_DISCORD_WORKSPACE || process.cwd()
+        isolation: channel
+        requireMention: true
+        registerCommands: true
+        idleTimeoutMs: 1800000
+        maxLiveSessions: 8
