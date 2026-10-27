@@ -1,3 +1,5 @@
+import { adaptMarkdownForEmbed } from './markdown.js'
+
 export const DISCORD_CONTENT_LIMIT = 2000
 export const DISCORD_SAFE_LIMIT = 1850
 
@@ -99,7 +101,10 @@ export function buildEmbed({
   emptyText = '（无内容）',
   maxEmbeds = 4,
 } = {}) {
-  const cleanDescription = suppressMentions(description).trim()
+  // Adapt Markdown before chunking so headings/tables are converted while the
+  // document is still whole; a table split across two embeds renders as garbage.
+  const adapted = adaptMarkdownForEmbed(description)
+  const cleanDescription = suppressMentions(adapted).trim()
   const chunks = cleanDescription ? chunkDiscordText(cleanDescription, EMBED_DESCRIPTION_SAFE_LIMIT) : [emptyText]
   const parts = chunks.length
   const limit = Math.max(1, Math.floor(maxEmbeds))

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   EMBED_COLORS,
   EMBED_DESCRIPTION_LIMIT,
+  answerPayload,
   boundedText,
   chunkDiscordText,
   finalPayloads,
@@ -13,6 +14,7 @@ import {
 } from '../src/discord/renderer.js'
 import { wrapUntrusted, UNTRUSTED_INPUT_POLICY } from '../src/bridge/untrusted.js'
 import { shouldCreateThread } from '../src/bridge/thread-manager.js'
+import { adaptMarkdownForEmbed } from '../src/discord/markdown.js'
 
 test('discord chunks stay under limit and preserve content', () => {
   const input = Array.from({ length: 500 }, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\n')
@@ -365,4 +367,50 @@ test('agentPreset defaults to standard and is configurable', async () => {
   process.env.DSH_DISCORD_AGENT_PRESET = 'ptc'
   assert.equal(resolveConfig({}).agentPreset, 'ptc')
   delete process.env.DSH_DISCORD_AGENT_PRESET
+})
+
+test('markdown adapter downgrades headings for embeds', () => {
+  const out = adaptMarkdownForEmbed('# Title\n## Section\n### Sub')
+  assert.ok(!out.includes('# Title'))
+  assert.ok(out.includes('**Title**'))
+  assert.ok(out.includes('**Section**'))
+  assert.ok(out.includes('**Sub**'))
+})
+
+test('markdown adapter leaves inline hashes and code fences alone', () => {
+  const source = 'issue #123 is not a heading\n\n```js\n# real comment\nconst a = 1\n```'
+  const out = adaptMarkdownForEmbed(source)
+  assert.ok(out.includes('issue #123'))
+  assert.ok(out.includes('# real comment'))
+  assert.ok(out.includes('const a = 1'))
+})
+
+test('markdown adapter converts tables into a fenced code block', () => {
+  const out = adaptMarkdownForEmbed('| a | b |\n|---|---|\n| 1 | 2 |')
+  assert.ok(out.startsWith('```text'))
+  assert.ok(out.trimEnd().endsWith('```'))
+  assert.ok(out.includes('a'))
+  assert.ok(out.includes('1'))
+  // Cells must be separated by pipes inside the block, not as raw markdown.
+  assert.ok(out.includes('|'))
+})
+
+test('markdown adapter keeps an unterminated fence verbatim while streaming', () => {
+  const out = adaptMarkdownForEmbed('# T\n\n```js\n# still code\nconst a = 1')
+  assert.ok(out.includes('**T**'))
+  assert.ok(out.includes('# still code'))
+})
+
+test('markdown adapter renders task list checkboxes', () => {
+  const out = adaptMarkdownForEmbed('- [ ] todo\n- [x] done')
+  assert.ok(out.includes('☐ todo'))
+  assert.ok(out.includes('☑ done'))
+})
+
+test('embed payloads go through the markdown adapter', () => {
+  const payload = answerPayload('# Heading\n\n| a | b |\n|---|---|\n| 1 | 2 |')
+  const description = payload.embeds[0].description
+  assert.ok(!/^# Heading/m.test(description))
+  assert.ok(description.includes('**Heading**'))
+  assert.ok(description.includes('```text'))
 })
