@@ -140,15 +140,17 @@ All conversational messages are rendered as **Discord Embed cards** instead of p
 | Card | Title | Color | Content |
 |---|---|---|---|
 | Placeholder / answer (streaming) | `⏳ Generating…` | Blue `#5865F2` | Aggregating assistant text |
-| Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One embed per call |
+| Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call: `✓ \`bash\`` |
 | Done | `✅ Completed` | Green `#57F287` | Final assistant text |
 | Stopped | `⏹️ Stopped` | Grey `#99AAB5` | Partial generated text |
 | Failed | `❌ Failed` | Red `#ED4245` | Redacted error message |
 
 ### Two-card layout (tool history is preserved)
 
-Tool-call cards are separated from the answer card: tool history stays in its own
-message while the answer card is edited in place, so history is not lost on long tasks.
+Tool calls are separated from the answer card: the whole run collapses into a single
+list card — one line per call, `⟳` while running and `✓` once finished — so a turn
+with many calls stays readable instead of stacking near-identical embeds. The answer
+card is edited in place, so history is not lost on long tasks.
 
 ## Thread isolation
 

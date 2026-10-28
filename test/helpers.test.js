@@ -223,7 +223,7 @@ test('reporter streams the answer card and finishes into a coloured status card'
   assert.deepEqual(last.payload.components, [])
 })
 
-test('tool calls stay as cards in their own message, one embed per call', async () => {
+test('tool calls render as one list card, one line per call', async () => {
   const transport = fakeTransport()
   const reporter = new StreamReporter({ transport, channelId: 'c1', intervalMs: 0, logger: { warn() {} } })
   await reporter.begin()
@@ -242,11 +242,14 @@ test('tool calls stay as cards in their own message, one embed per call', async 
   assert.equal(reporter.tools.length, 2, 'both calls are retained')
 
   const toolEdit = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(toolEdit.payload.embeds.length, 2, 'each call keeps its own embed')
-  assert.equal(toolEdit.payload.embeds[0].title, '🛠 工具调用')
-  assert.match(toolEdit.payload.embeds[0].description, /bash/)
-  assert.match(toolEdit.payload.embeds[1].description, /read/)
-  assert.match(toolEdit.payload.embeds[0].footer.text, /用时/)
+  assert.equal(toolEdit.payload.embeds.length, 1, 'the whole run is a single embed')
+  const embed = toolEdit.payload.embeds[0]
+  assert.equal(embed.title, '🛠 工具调用')
+  const lines = embed.description.split('\n')
+  assert.equal(lines.length, 2, 'one line per call')
+  assert.match(lines[0], /bash/)
+  assert.match(lines[1], /read/)
+  assert.match(embed.footer.text, /共 2 次/)
 
   // A turn owns exactly ONE answer card however many tools it calls: earlier
   // versions opened a new card per result and left one-word fragments behind.
@@ -262,7 +265,9 @@ test('tool calls stay as cards in their own message, one embed per call', async 
 
   await reporter.finish('done', 'completed')
   const stillThere = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(stillThere.payload.embeds.length, 2, 'finishing never deletes tool cards')
+  assert.equal(stillThere.payload.embeds.length, 1, 'finishing never deletes the tool list')
+  assert.match(stillThere.payload.embeds[0].description, /bash/)
+  assert.match(stillThere.payload.embeds[0].description, /read/)
 })
 
 test('reporter edit interval backs off for long cards and stays under 4.5s', () => {
@@ -432,4 +437,48 @@ test('config expands ~ in audit and state paths', async () => {
 test('config keeps absolute audit paths as-is', async () => {
   const { resolveConfig } = await import('../src/config.js')
   assert.equal(resolveConfig({ auditPath: '/var/data/a.sqlite' }).auditPath, '/var/data/a.sqlite')
+})
+
+test('tool list card shows one line per call with running state', async () => {
+  const { toolCardsPayload } = await import('../src/discord/renderer.js')
+  const now = Date.now()
+  const payload = toolCardsPayload([
+    { name: 'bash', startedAt: now - 3000, endedAt: now - 2000 },
+    { name: 'bash', startedAt: now - 1000, endedAt: now - 500 },
+    { name: 'edit', startedAt: now - 100, endedAt: now - 50 },
+    { name: 'fetch', startedAt: now - 10 },
+  ])
+  assert.equal(payload.embeds.length, 1)
+  const embed = payload.embeds[0]
+  assert.equal(embed.title, '🛠 工具调用')
+  const lines = embed.description.split('\n')
+  assert.equal(lines.length, 4)
+  assert.match(lines[0], /✓ `bash`/)
+  assert.match(lines[1], /✓ `bash`/)
+  assert.match(lines[2], /✓ `edit`/)
+  assert.match(lines[3], /⟳ `fetch`/, 'the running call is marked')
+  assert.match(embed.footer.text, /共 4 次/)
+  assert.match(embed.footer.text, /1 个运行中/)
+})
+
+test('tool list card does not leak tool arguments', async () => {
+  const { toolCardsPayload } = await import('../src/discord/renderer.js')
+  const payload = toolCardsPayload([
+    { name: 'bash', args: '{"command":"cat /etc/secret"}', startedAt: 1, endedAt: 2 },
+  ])
+  const description = payload.embeds[0].description
+  assert.ok(!description.includes('cat /etc/secret'), 'arguments must not be rendered')
+  assert.match(description, /bash/)
+})
+
+test('tool list card elides the oldest entries past the line cap', async () => {
+  const { toolCardsPayload, TOOL_LIST_MAX_LINES } = await import('../src/discord/renderer.js')
+  const many = Array.from({ length: TOOL_LIST_MAX_LINES + 6 }, (_, i) => ({
+    name: `t${i}`,
+    startedAt: 1,
+    endedAt: 2,
+  }))
+  const embed = toolCardsPayload(many).embeds[0]
+  assert.match(embed.description, /更早的 6 次已省略/)
+  assert.match(embed.footer.text, new RegExp(`共 ${TOOL_LIST_MAX_LINES + 6} 次`))
 })

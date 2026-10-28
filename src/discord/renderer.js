@@ -17,7 +17,10 @@ export const EMBED_DESCRIPTION_SAFE_LIMIT = 3800
 
 /** No answer / tool card ever sends more than this many embeds per message. */
 export const MAX_CARD_EMBEDS = 10
-/** Tool-run cards are recency-biased: older calls are dropped before newer ones. */
+/**
+ * @deprecated The tool run is now a single list embed, sized by
+ * TOOL_LIST_MAX_LINES, so a per-call card cap no longer applies.
+ */
 export const MAX_TOOL_CARDS = 6
 
 export const EMBED_COLORS = {
@@ -221,10 +224,41 @@ export function toolEmbed({ name, args, startedAt, endedAt, showArgs = 'summary'
   }
 }
 
-/** The tool-run message: one embed per call, none of them removed afterwards. */
+/** One tool name per line, newest last; a running call is marked with its glyph. */
+export const TOOL_LIST_MAX_LINES = 24
+
+function toolListLine(tool, index) {
+  const name = clipOneLine(tool?.name, 64) || 'unknown'
+  const running = tool?.endedAt === undefined
+  const glyph = running ? '⟳' : '✓'
+  return `${glyph} \`${name}\``
+}
+
+/**
+ * The tool-run message: a single embed listing every call one per line.
+ *
+ * One card per call pushed the transcript into a column of near-identical
+ * embeds; a compact list keeps the turn readable while still showing which
+ * tools ran, in order, and which one is still running.
+ */
 export function toolCardsPayload(tools = []) {
-  const embeds = tools.slice(-MAX_TOOL_CARDS).map((tool) => toolEmbed(tool))
-  return toPayload(embeds)
+  if (!tools.length) return toPayload([])
+  const recent = tools.slice(-TOOL_LIST_MAX_LINES)
+  const hidden = tools.length - recent.length
+  const lines = recent.map((tool, i) => toolListLine(tool, i))
+  if (hidden > 0) lines.unshift(`… 更早的 ${hidden} 次已省略`)
+  const running = tools.filter((tool) => tool?.endedAt === undefined).length
+  const footerBits = [`共 ${tools.length} 次`]
+  if (running > 0) footerBits.push(`${running} 个运行中`)
+  const description = lines.join('\n')
+  return toPayload([
+    {
+      color: EMBED_COLORS.working,
+      title: '🛠 工具调用',
+      description,
+      footer: { text: footerBits.join(' · ') },
+    },
+  ])
 }
 
 /** Message holding the aggregated assistant answer, in 1..N embeds. */
