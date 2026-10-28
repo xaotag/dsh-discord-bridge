@@ -8,7 +8,12 @@
 import { authorized } from '../../config.js'
 import { describeInteraction, normalizeInteraction } from '../../discord/commands.js'
 import { normalizeDeepSeekInteraction } from '../../discord/deepseek-commands.js'
-import { QUESTION_MODAL_PREFIX, finalCard } from '../../discord/cards-v2.js'
+import {
+  QUESTION_CUSTOM_PREFIX,
+  QUESTION_MODAL_PREFIX,
+  QUESTION_SKIP_PREFIX,
+  finalCard,
+} from '../../discord/cards-v2.js'
 import { STOP_BUTTON_PREFIX } from '../../discord/renderer.js'
 import { handleCommand } from '../commands/index.js'
 import { handleApprovalButton } from './approval.js'
@@ -69,22 +74,48 @@ async function handleStopButton(runtime, interaction, messageId) {
 
 /** Route a button click; returns true when the interaction was consumed. */
 async function handleButton(runtime, interaction) {
-  const { transport, logger, config } = runtime
+  const { logger } = runtime
   const customId = String(interaction?.customId || '')
 
-  if (customId.startsWith(QUESTION_CUSTOM_PREFIX)) {
-    await handleQuestionCustom(runtime, interaction, { authorized }).catch((error) =>
-      logger.warn('打开自定义输入失败:', error?.message || String(error)),
-    )
-    return true
-  }
+  switch (classifyButton(customId)) {
+    case 'question-custom':
+      await handleQuestionCustom(runtime, interaction, { authorized }).catch((error) =>
+        logger.warn('打开自定义输入失败:', error?.message || String(error)),
+      )
+      return true
 
-  if (!customId.startsWith(STOP_BUTTON_PREFIX)) {
-    return handleApprovalButton(runtime, interaction, customId, { authorized })
-  }
+    // Skip is a *button*, not a select, but it records the same "no choice"
+    // answer — so it goes through the select handler. Missing this case left the
+    // click unanswered until Discord reported the interaction as timed out.
+    case 'question-skip':
+      await handleQuestionSelect(runtime, interaction, { authorized }).catch((error) =>
+        logger.warn('记录跳过失败:', error?.message || String(error)),
+      )
+      return true
 
-  await handleStopButton(runtime, interaction, customId.slice(STOP_BUTTON_PREFIX.length))
-  return true
+    case 'stop':
+      await handleStopButton(runtime, interaction, customId.slice(STOP_BUTTON_PREFIX.length))
+      return true
+
+    default:
+      return handleApprovalButton(runtime, interaction, customId, { authorized })
+  }
+}
+
+/**
+ * Which handler owns a button custom_id.
+ *
+ * Extracted so the routing can be tested: the skip button is a plain button yet
+ * belongs to the question flow, and missing that case leaves Discord waiting.
+ *
+ * @returns 'question-custom' | 'question-skip' | 'stop' | 'approval'
+ */
+export function classifyButton(customId) {
+  const id = String(customId ?? '')
+  if (id.startsWith(QUESTION_CUSTOM_PREFIX)) return 'question-custom'
+  if (id.startsWith(QUESTION_SKIP_PREFIX)) return 'question-skip'
+  if (id.startsWith(STOP_BUTTON_PREFIX)) return 'stop'
+  return 'approval'
 }
 
 export function createInteractionHandler(runtime) {

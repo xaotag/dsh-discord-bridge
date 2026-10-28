@@ -1283,3 +1283,22 @@ test('a long body is truncated rather than dropped', async () => {
   assert.match(texts, /z{1000}/, 'the body still has content')
   assert.match(texts, /…/, 'truncation is marked')
 })
+
+test('every question button routes to its own handler', async () => {
+  const { classifyButton } = await import('../src/bridge/interactions/index.js')
+  const {
+    QUESTION_CUSTOM_PREFIX,
+    QUESTION_SKIP_PREFIX,
+  } = await import('../src/discord/cards-v2.js')
+  const { STOP_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, REJECT_BUTTON_PREFIX } =
+    await import('../src/discord/renderer.js')
+
+  // The skip control is a plain button, not a select, but it must reach the
+  // question handler. When this case was missing the click went unanswered and
+  // Discord reported the app as unresponsive.
+  assert.equal(classifyButton(`${QUESTION_SKIP_PREFIX}r1:0`), 'question-skip')
+  assert.equal(classifyButton(`${QUESTION_CUSTOM_PREFIX}r1:0`), 'question-custom')
+  assert.equal(classifyButton(`${STOP_BUTTON_PREFIX}m1`), 'stop')
+  assert.equal(classifyButton(`${APPROVE_BUTTON_PREFIX}r1`), 'approval')
+  assert.equal(classifyButton(`${REJECT_BUTTON_PREFIX}r1`), 'approval')
+})
