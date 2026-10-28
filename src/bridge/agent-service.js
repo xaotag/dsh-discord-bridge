@@ -173,6 +173,7 @@ export class AgentService {
   }
 
   async setupAgent(agentCtx, runtime) {
+    this.logger.log?.(`[agent-setup] 进入 setupAgent key=${runtime.key} hasCtx=${Boolean(agentCtx)} hasOn=${Boolean(agentCtx?.on)}`)
     await this.mountPreset(agentCtx, runtime)
     const systemPrompt = agentCtx?.systemPrompt || this.ctx.get('systemPrompt')
     if (systemPrompt?.section) {
@@ -188,23 +189,15 @@ export class AgentService {
       }
     }
     this.installSelection(agentCtx, runtime)
-    // Diagnostic: which tools this Agent actually got. `ask_user_question` comes
-    // from the mounted preset, so a missing entry here means the preset did not
-    // compose it and the model could never call it.
+    // Diagnostic: what this Agent actually exposes.
     try {
-      const tools = agentCtx?.agent?.tools ?? agentCtx?.tools
-      const names = Array.isArray(tools)
-        ? tools.map((t) => t?.name ?? t?.id ?? String(t))
-        : tools && typeof tools === 'object'
-          ? Object.keys(tools)
-          : []
-      if (names.length) {
-        this.logger.log?.(`[agent-tools] ${runtime.key}: ${names.includes('ask_user_question') ? '有' : '无'} ask_user_question（共 ${names.length} 个工具）`)
-      } else {
-        this.logger.log?.(`[agent-tools] ${runtime.key}: 无法读取工具列表`)
-      }
-    } catch {
-      /* diagnostic only */
+      const keys = Object.keys(agentCtx ?? {})
+      const agent = agentCtx?.agent
+      this.logger.log?.(
+        `[agent-diag] key=${runtime.key} ctxKeys=${keys.slice(0, 12).join('|') || '(none)'} hasAgent=${Boolean(agent)}`,
+      )
+    } catch (error) {
+      this.logger.log?.(`[agent-diag] 读取失败: ${error?.message || String(error)}`)
     }
     // DSH dispatches `user-questions/request` on the *agent's own scope*, so a
     // listener on the plugin root never sees it. Registering here — with the
