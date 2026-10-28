@@ -89,7 +89,15 @@ export function apply(ctx, rawConfig = {}) {
   const limiter = new DiscordRateLimiter({ logger, maxRetries: config.maxRateLimitRetries })
   const transport = new DiscordTransport({ logger, rateLimiter: limiter })
   transport.setAudit(audit)
-  const agents = new AgentService({ ctx, config, state, logger, audit })
+  const agents = new AgentService({
+    ctx,
+    config,
+    state,
+    logger,
+    audit,
+    // Registered per Agent scope inside AgentService.setupAgent.
+    answerQuestions: (request, next) => answerUserQuestions(request, next),
+  })
   const approvals = new ApprovalRegistry({ logger })
   const questions_ = new QuestionRegistry({ logger })
   // `user-questions/request` carries no channel id, and a question card has to
@@ -1372,34 +1380,9 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
-  /**
-   * Answer `ask_user_question` calls from Discord.
-   *
-   * DSH dispatches this waterfall for a live foreground call; without a
-   * listener the agent blocks forever (`Error: no user-questions answerer
-   * accepted the request`), which is exactly how a turn used to hang. Returning
-   * the answer here is what lets the turn continue.
-   *
-   * `next` is the remaining chain: calling it hands the request to the Web
-   * answerer. We only call it when this bridge cannot post a card at all, so a
-   * Discord-configured deployment still answers in the channel.
-   */
-  ctx.on('user-questions/request', async (request, next) => {
-    if (disposed) return next()
-    const questions = Array.isArray(request?.questions) ? request.questions : []
-    if (!questions.length) return next()
-    if (!lastActiveChannelId) {
-      logger.warn('收到 ask_user_question 但没有活跃频道，交给下一个 answerer')
-      return next()
-    }
-    try {
-      return await answerUserQuestions(request)
-    } catch (error) {
-      logger.warn('处理 ask_user_question 失败:', error?.message || String(error))
-      // Never leave the agent blocked: an all-skipped batch lets it continue.
-      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
-    }
-  })
+  // `user-questions/request` is dispatched on the Agent's own scope, so the
+  // answerer is registered per Agent inside AgentService.setupAgent rather than
+  // here on the plugin root — a root listener never receives the event.
 
   ctx.effect(
     () => () => {

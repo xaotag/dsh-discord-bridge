@@ -9,12 +9,20 @@ import { UNTRUSTED_INPUT_POLICY } from './untrusted.js'
  * safety registration. It has no Discord imports.
  */
 export class AgentService {
-  constructor({ ctx, config, state, logger = console, audit }) {
+  /**
+   * @param {object} options
+   * @param {Function} [options.answerQuestions] Answerer for `user-questions`
+   *   requests. It is registered per Agent scope inside `setup`, because DSH
+   *   dispatches that event on the agent's own scope and a root listener never
+   *   receives it.
+   */
+  constructor({ ctx, config, state, logger = console, audit, answerQuestions }) {
     this.ctx = ctx
     this.config = config
     this.state = state
     this.logger = logger
     this.audit = audit
+    this.answerQuestions = answerQuestions
     this.runtimes = new Map()
     this.disposed = false
     this.disposeStream = ctx.on('agent/assistant-stream', (payload) => this.observeStream(payload))
@@ -180,6 +188,19 @@ export class AgentService {
       }
     }
     this.installSelection(agentCtx, runtime)
+    // DSH dispatches `user-questions/request` on the *agent's own scope*, so a
+    // listener on the plugin root never sees it. Registering here — with the
+    // context DSH hands to `setup` — puts the listener on the matching scope.
+    if (agentCtx?.on && typeof this.answerQuestions === 'function') {
+      agentCtx.on('user-questions/request', async (request, next) => {
+        try {
+          return await this.answerQuestions(request, next, runtime)
+        } catch (error) {
+          this.logger.warn?.('处理 user-questions 失败:', error?.message || String(error))
+          return next()
+        }
+      })
+    }
   }
 
   /**
