@@ -156,6 +156,18 @@ export function parseTextCommand(text) {
   return { group: match[1].toLowerCase(), command: match[2].toLowerCase(), arg: match[3] }
 }
 
+/** Depth-first search for an option by name in the raw interaction data. */
+function findOption(nodes, name) {
+  if (!Array.isArray(nodes)) return undefined
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue
+    if (node.name === name && node.value !== undefined && node.value !== null) return node
+    const nested = findOption(node.options, name)
+    if (nested) return nested
+  }
+  return undefined
+}
+
 function readOption(interaction, name) {
   // Discord clients occasionally drop the focused selection while the server
   // still receives the interaction; read defensively and keep a raw fallback.
@@ -166,9 +178,9 @@ function readOption(interaction, name) {
     /* option absent in a stale command tree */
   }
   try {
-    const raw = interaction.options.data
-      ?.flatMap((option) => (option.type === 2 || option.type === 1 ? option.options || [] : [option]))
-      ?.find((option) => option.name === name)
+    // Group > subcommand > option nests two levels deep, so walk it recursively
+    // instead of flattening a single level.
+    const raw = findOption(interaction.options.data, name)
     if (raw?.value !== undefined && raw?.value !== null) return String(raw.value)
   } catch {
     /* ignore */
@@ -199,15 +211,17 @@ export function normalizeInteraction(interaction) {
   const arg =
     command === 'ask' || command === 'steer'
       ? readOption(interaction, 'text')
-      : command === 'set' || command === 'reasoning'
+      : command === 'set' || command === 'reasoning' || command === 'model'
         ? readOption(interaction, 'value')
         : command === 'create'
           ? readOption(interaction, 'name')
           : command === 'bind'
             ? readOption(interaction, 'session')
-            : command === 'model'
-              ? readOption(interaction, 'value')
-              : undefined
+            : command === 'confirm'
+              ? readOption(interaction, 'action')
+              : command === 'sudo'
+                ? readOption(interaction, 'command')
+                : undefined
   // Backward compatibility for Discord clients still caching the pre-group
   // `/dsh status|new|model|reasoning|ask|steer|stop|help` command tree.
   const legacy = {

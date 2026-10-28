@@ -637,3 +637,55 @@ test('privileged request carries a TTL and a unique id', async () => {
   assert.notEqual(a.id, b.id)
   assert.ok(a.expiresAt > a.createdAt)
 })
+
+test('normalizeInteraction reads options nested under a group > subcommand', async () => {
+  const { normalizeInteraction } = await import('../src/discord/commands.js')
+  // Group > subcommand > option: the real Discord payload nests two levels, and
+  // flattening only one level was why `confirm`/`sudo` always saw an empty arg.
+  const make = (command, optionName, optionValue) => ({
+    isChatInputCommand: () => true,
+    commandName: 'dsh',
+    options: {
+      getSubcommandGroup: () => 'system',
+      getSubcommand: () => command,
+      getString: () => null,
+      data: [
+        {
+          name: 'system',
+          type: 2,
+          options: [
+            {
+              name: command,
+              type: 1,
+              options: [{ name: optionName, type: 3, value: optionValue }],
+            },
+          ],
+        },
+      ],
+    },
+  })
+
+  const confirm = normalizeInteraction(make('confirm', 'action', '删除测试文件'))
+  assert.equal(confirm.command, 'confirm')
+  assert.equal(confirm.arg, '删除测试文件')
+
+  const sudo = normalizeInteraction(make('sudo', 'command', 'systemctl restart mihomo'))
+  assert.equal(sudo.command, 'sudo')
+  assert.equal(sudo.arg, 'systemctl restart mihomo')
+})
+
+test('normalizeInteraction returns no arg for a command without options', async () => {
+  const { normalizeInteraction } = await import('../src/discord/commands.js')
+  const out = normalizeInteraction({
+    isChatInputCommand: () => true,
+    commandName: 'dsh',
+    options: {
+      getSubcommandGroup: () => 'system',
+      getSubcommand: () => 'audit',
+      getString: () => null,
+      data: [{ name: 'system', type: 2, options: [{ name: 'audit', type: 1 }] }],
+    },
+  })
+  assert.equal(out.command, 'audit')
+  assert.equal(out.arg, undefined)
+})
