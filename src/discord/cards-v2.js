@@ -12,14 +12,17 @@
 import {
   MAX_TOTAL_COMPONENTS,
   TEXT_DISPLAY_LIMIT,
+  TEXT_INPUT_STYLE,
   actionRow,
   button,
   container,
   countComponents,
+  modal,
   separator,
   stringSelect,
   textChunks,
   textDisplay,
+  textInput,
   v2Payload,
 } from './components-v2.js'
 import { suppressMentions } from './renderer.js'
@@ -289,6 +292,9 @@ export function noticeCard(text, { title, accentColor = ACCENT.notice, footer } 
 /** Custom-ID prefixes for the question card's controls. */
 export const QUESTION_SELECT_PREFIX = 'dsh:q:sel:'
 export const QUESTION_SKIP_PREFIX = 'dsh:q:skip:'
+export const QUESTION_CUSTOM_PREFIX = 'dsh:q:custom:'
+/** The modal's custom_id; the request/question key is appended. */
+export const QUESTION_MODAL_PREFIX = 'dsh:q:modal:'
 
 /**
  * One DSH question rendered as a Discord card.
@@ -306,6 +312,7 @@ export function questionCard({
   expiresAt,
   selectPrefix = QUESTION_SELECT_PREFIX,
   skipPrefix = QUESTION_SKIP_PREFIX,
+  customPrefix = QUESTION_CUSTOM_PREFIX,
 } = {}) {
   const q = question ?? {}
   const options = Array.isArray(q.options) ? q.options : []
@@ -338,8 +345,16 @@ export function questionCard({
     )
   }
 
+  // Skip and custom share a row: neither is a listed option, both are ways out
+  // of the choice.
   children.push(
     actionRow([
+      button({
+        customId: `${customPrefix}${requestId}:${index}`,
+        label: '自定义',
+        style: 2,
+        emoji: { name: '✏️' },
+      }),
       button({
         customId: `${skipPrefix}${requestId}:${index}`,
         label: '跳过',
@@ -375,6 +390,38 @@ export function answeredQuestionCard({ question, selected = [], custom, skipped 
     accentColor: skipped ? ACCENT.cancelled : ACCENT.completed,
     title: q.header || '❓ 已作答',
     body: lines.join('\n\n'),
+  })
+}
+
+/**
+ * The modal that collects a free-text answer.
+ *
+ * A modal is the only Discord surface that accepts typed input, so "custom"
+ * opens one instead of trying to fit a text field into the card. The request id
+ * and question index travel in the modal's custom_id, which MODAL_SUBMIT echoes
+ * back untouched.
+ */
+export function questionCustomModal({
+  requestId,
+  question,
+  index,
+  modalPrefix = QUESTION_MODAL_PREFIX,
+} = {}) {
+  const q = question ?? {}
+  const fieldLabel = String(q.header || q.question || '你的回答').slice(0, 45)
+  return modal({
+    customId: `${modalPrefix}${requestId}:${index}`,
+    title: fieldLabel || '自定义回答',
+    components: [
+      textInput({
+        customId: 'answer',
+        label: fieldLabel || '自定义回答',
+        style: TEXT_INPUT_STYLE.PARAGRAPH,
+        placeholder: '输入你的回答…',
+        maxLength: 1000,
+        required: false,
+      }),
+    ],
   })
 }
 

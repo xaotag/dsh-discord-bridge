@@ -33,9 +33,12 @@ import {
   STOP_BUTTON_PREFIX,
 } from './src/discord/renderer.js'
 import {
+  QUESTION_CUSTOM_PREFIX,
+  QUESTION_MODAL_PREFIX,
   QUESTION_SELECT_PREFIX,
   QUESTION_SKIP_PREFIX,
   answeredQuestionCard,
+  questionCustomModal,
   approvalCard,
   decidedApprovalCard,
   finalCard,
@@ -950,6 +953,12 @@ export function apply(ctx, rawConfig = {}) {
    */
   async function handleButton(interaction) {
     const customId = String(interaction?.customId || '')
+    if (customId.startsWith(QUESTION_CUSTOM_PREFIX)) {
+      await handleQuestionCustom(interaction).catch((error) =>
+        logger.warn('打开自定义输入失败:', error?.message || String(error)),
+      )
+      return true
+    }
     if (!customId.startsWith(STOP_BUTTON_PREFIX)) {
       return handleApprovalButton(interaction, customId)
     }
@@ -996,6 +1005,12 @@ export function apply(ctx, rawConfig = {}) {
   async function handleInteraction(interaction) {
     if (disposed) return
     if (interaction?.isButton?.() && (await handleButton(interaction))) return
+    if (interaction?.isModalSubmit?.() && String(interaction.customId || '').startsWith(QUESTION_MODAL_PREFIX)) {
+      await handleQuestionModalSubmit(interaction).catch((error) =>
+        logger.warn('处理自定义输入失败:', error?.message || String(error)),
+      )
+      return
+    }
     if (interaction?.isStringSelectMenu?.() && isQuestionCustomId(interaction.customId)) {
       await handleQuestionSelect(interaction).catch((error) =>
         logger.warn('记录问题答案失败:', error?.message || String(error)),
@@ -1273,6 +1288,14 @@ export function apply(ctx, rawConfig = {}) {
     return id.startsWith(QUESTION_SELECT_PREFIX) || id.startsWith(QUESTION_SKIP_PREFIX)
   }
 
+  /** Split `<prefix><requestId>:<questionIndex>` into its two parts. */
+  function parseQuestionKey(customId, prefix) {
+    const rest = String(customId ?? '').slice(prefix.length)
+    const sep = rest.lastIndexOf(':')
+    if (sep <= 0) return undefined
+    return { requestId: rest.slice(0, sep), index: Number(rest.slice(sep + 1)) }
+  }
+
   /**
    * Record a dropdown selection or a skip, then retire that card.
    *
@@ -1341,6 +1364,91 @@ export function apply(ctx, rawConfig = {}) {
     await transport
       .replyEphemeral(interaction, skip ? '已跳过。' : `已记录：${selected.join('、')}`)
       .catch(() => undefined)
+  }
+
+  /**
+   * "自定义" button: open the modal that collects typed input.
+   *
+   * The card stays untouched until the modal is submitted — abandoning the
+   * modal sends nothing, so the question remains answerable, which matches how
+   * DSH treats an unanswered question.
+   */
+  async function handleQuestionCustom(interaction) {
+    await transport.deferButton(interaction).catch(() => undefined)
+    if (!authorized(config, interaction.user?.id, interaction.guildId || undefined, interaction.channelId || '')) {
+      await transport.replyEphemeral(interaction, '你不在授权名单内。').catch(() => undefined)
+      return
+    }
+    const parsed = parseQuestionKey(interaction.customId, QUESTION_CUSTOM_PREFIX)
+    const entry = parsed ? questions_.get(parsed.requestId) : undefined
+    const question = entry?.questions?.[parsed?.index]
+    if (!entry || !question) {
+      await transport.replyEphemeral(interaction, '这个问题已经失效或已作答。').catch(() => undefined)
+      return
+    }
+    try {
+      await transport.showModal(
+        interaction,
+        questionCustomModal({
+          requestId: parsed.requestId,
+          question,
+          index: parsed.index,
+        }),
+      )
+    } catch (error) {
+      logger.warn('打开自定义输入框失败:', error?.message || String(error))
+      await transport.replyEphemeral(interaction, '打开输入框失败，请重试。').catch(() => undefined)
+    }
+  }
+
+  /**
+   * MODAL_SUBMIT for a custom answer.
+   *
+   * A submitted-but-empty field is treated as a skip rather than an answer,
+   * because DSH encodes "no choice, no text" as skipped.
+   */
+  async function handleQuestionModalSubmit(interaction) {
+    const parsed = parseQuestionKey(interaction.customId, QUESTION_MODAL_PREFIX)
+    const entry = parsed ? questions_.get(parsed.requestId) : undefined
+    const question = entry?.questions?.[parsed?.index]
+    if (!entry || !question) {
+      await transport
+        .replyModalMessage(interaction, '这个问题已经失效或已作答。')
+        .catch(() => undefined)
+      return
+    }
+
+    const raw = interaction.fields?.getTextInputValue?.('answer') ?? ''
+    const custom = String(raw).trim()
+    const result = questions_.answer(parsed.requestId, question.id, {
+      selected: [],
+      custom: custom || undefined,
+    })
+
+    try {
+      const messageId = interaction.message?.id
+      if (messageId && interaction.channelId) {
+        await transport.edit(
+          interaction.channelId,
+          messageId,
+          answeredQuestionCard({
+            question,
+            selected: [],
+            custom,
+            skipped: !custom,
+          }),
+        )
+      }
+    } catch (error) {
+      logger.warn('更新问题卡片失败:', error?.message || String(error))
+    }
+
+    await transport
+      .replyModalMessage(interaction, custom ? `已记录：${custom.slice(0, 200)}` : '已跳过。')
+      .catch(() => undefined)
+    if (!result.ok) {
+      logger.warn('记录自定义答案失败:', result.reason || 'unknown')
+    }
   }
 
   async function requestApproval({ channelId, userId, description, title, footer } = {}) {

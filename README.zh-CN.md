@@ -247,6 +247,35 @@ DSH_DISCORD_AGENT_PRESET=standard
 | | `audit` | 查看当前频道最近操作记录 |
 | | `confirm <动作>` | 发送批准/拒绝卡片并等待决定 |
 
+## 回答 `ask_user_question`
+
+DSH 的 `ask_user_question` 会阻塞 agent 直到有人作答。插件注册了
+`user-questions/request` 的 answerer，把提问变成 Discord 卡片，每个问题一张：
+
+```
+## 选择方案
+用哪种重构方式？
+
+[下拉菜单：保守 / 激进]   [✏️ 自定义]   [⏭️ 跳过]
+```
+
+| 控件 | 行为 |
+|---|---|
+| 下拉菜单 | 单选或多选（取决于 `multiSelect`），上限 25 项 |
+| **✏️ 自定义** | 弹窗输入自由文本，提交后作为 `custom` 答案 |
+| **⏭️ 跳过** | 不选也不填，DSH 记为 `selected: []` |
+
+要点：
+
+- 频道由 `request.agent` 反查（`channelForAgent()`），不依赖「最近活跃频道」
+- 未打标签的根监听器是全局的，能收到每个 agent 的请求（见 `@deepseek-ai/dsh-scope`）
+- 反查不到频道时交给 `next()`，让 Web answerer 接管
+- 超时（10 分钟）、异常、无频道一律落为「跳过」，**agent 永远不会被永久阻塞**
+- 一次请求里未作答的问题也会补成 `selected: []`——DSH 拒绝遗漏任何问题的答复批次
+
+自定义输入走 Modal（type 4 Text Input），这是 Discord 唯一接受键盘输入的地方。
+弹窗关掉不发任何东西，问题保持可答。
+
 ## 批准/拒绝按钮
 
 敏感操作可以挂一次人工确认。发出确认卡片后带两个按钮：

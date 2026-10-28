@@ -260,6 +260,41 @@ All bridge APIs are registered as `/dsh` subcommand groups:
 | | `audit` | Recent operations for the current channel |
 | | `confirm <action>` | Post an approve/reject card and wait for the decision |
 
+## Answering `ask_user_question`
+
+DSH blocks the agent on `ask_user_question` until a human answers. The bridge
+registers a `user-questions/request` answerer that turns each question into a
+card, one per question:
+
+```
+## Choose an approach
+Which refactor?
+
+[select: conservative / aggressive]   [✏️ Custom]   [⏭️ Skip]
+```
+
+| Control | Behaviour |
+|---|---|
+| Select menu | Single or multi (per `multiSelect`), up to 25 options |
+| **✏️ Custom** | Opens a modal; the typed text becomes the `custom` answer |
+| **⏭️ Skip** | Nothing chosen, nothing typed — DSH records `selected: []` |
+
+Notes:
+
+- The channel is resolved from `request.agent` (`channelForAgent()`), not from a
+  "most recently active channel" guess
+- An untagged listener on the plugin root is global and sees every agent's
+  request (see `@deepseek-ai/dsh-scope`)
+- When the channel cannot be resolved, `next()` hands the request to the Web answerer
+- Timeout (10 min), errors and a missing channel all settle as skipped — **the
+  agent is never left blocked**
+- Questions left untouched are still emitted as `selected: []`, because DSH
+  rejects a batch that omits any question
+
+Custom input uses a modal (type 4 Text Input) — the only Discord surface that
+accepts typed text. Closing the modal sends nothing, so the question stays
+answerable.
+
 ## Approval buttons
 
 Sensitive actions can be gated on an explicit operator decision. Posting an

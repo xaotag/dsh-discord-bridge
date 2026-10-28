@@ -1148,3 +1148,58 @@ test('an answered question card drops the controls', async () => {
   const skipped = JSON.stringify(answeredQuestionCard({ question: { question: '?' }, skipped: true }))
   assert.match(skipped, /已跳过/)
 })
+
+test('question card offers both custom and skip', async () => {
+  const { questionCard, QUESTION_CUSTOM_PREFIX, QUESTION_SKIP_PREFIX } =
+    await import('../src/discord/cards-v2.js')
+  const payload = questionCard({
+    requestId: 'r1',
+    index: 0,
+    total: 1,
+    question: { id: 'q1', question: '选哪个？', options: [{ label: 'A' }] },
+  })
+  const json = JSON.stringify(payload)
+  assert.ok(json.includes(`${QUESTION_CUSTOM_PREFIX}r1:0`), 'custom button present')
+  assert.ok(json.includes(`${QUESTION_SKIP_PREFIX}r1:0`), 'skip button present')
+})
+
+test('the custom modal carries a text input keyed to the question', async () => {
+  const { questionCustomModal, QUESTION_MODAL_PREFIX } = await import('../src/discord/cards-v2.js')
+  const m = questionCustomModal({
+    requestId: 'r1',
+    index: 2,
+    question: { header: '选择方案', question: '用哪种？' },
+  })
+  assert.equal(m.custom_id, `${QUESTION_MODAL_PREFIX}r1:2`)
+  assert.equal(m.components.length, 1)
+  const input = m.components[0]
+  assert.equal(input.type, 4, 'a text input, the only modal input type')
+  assert.equal(input.custom_id, 'answer')
+  assert.equal(input.style, 2, 'paragraph style for free text')
+  assert.ok(input.title === undefined, 'modals use a title, not a field label')
+  assert.ok(m.title.length <= 45, 'Discord caps modal titles at 45 chars')
+})
+
+test('a custom answer is stored as free text, a blank one as a skip', async () => {
+  const { QuestionRegistry } = await import('../src/bridge/question-registry.js')
+  const registry = new QuestionRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+
+  const answered = registry.create({ channelId: 'c', questions: [{ id: 'q', question: '?' }] })
+  registry.answer(answered.id, 'q', { selected: [], custom: '我自己写的答案' })
+  const settled = await answered.answered
+  assert.deepEqual(settled.answers[0], { id: 'q', selected: [], custom: '我自己写的答案' })
+
+  // Blank input is a skip: no selection, no custom.
+  const blank = registry.create({ channelId: 'c', questions: [{ id: 'q', question: '?' }] })
+  registry.answer(blank.id, 'q', { selected: [], custom: undefined })
+  const blankSettled = await blank.answered
+  assert.deepEqual(blankSettled.answers[0], { id: 'q', selected: [] })
+})
+
+test('answered card shows a custom answer distinctly', async () => {
+  const { answeredQuestionCard } = await import('../src/discord/cards-v2.js')
+  const card = answeredQuestionCard({ question: { question: '?' }, custom: '手写答案', skipped: false })
+  const texts = flattenTexts(card.components).join('\n')
+  assert.match(texts, /自定义/)
+  assert.match(texts, /手写答案/)
+})
