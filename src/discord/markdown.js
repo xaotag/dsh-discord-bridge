@@ -21,6 +21,19 @@
 const FENCE = '```'
 
 /**
+ * Rewrite GitHub-flavoured Markdown for a Text Display (Components V2).
+ *
+ * A Text Display renders the full Markdown rules, so headings, nested lists and
+ * emphasis all survive untouched. Only the constructs Discord still lacks are
+ * converted — tables, since no Discord surface has table syntax.
+ */
+export function adaptMarkdownForTextDisplay(text) {
+  const source = String(text ?? '')
+  if (!source) return ''
+  return mapOutsideCode(source, (segment) => convertTables(segment))
+}
+
+/**
  * Rewrite GitHub-flavoured Markdown so it renders acceptably inside an embed
  * description. Never touches text inside fenced code blocks.
  */

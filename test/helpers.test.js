@@ -192,7 +192,7 @@ function fakeTransport() {
   }
 }
 
-test('reporter streams the answer card and finishes into a coloured status card', async () => {
+test('reporter streams the answer card and finishes into a status card', async () => {
   const transport = fakeTransport()
   const reporter = new StreamReporter({
     transport,
@@ -204,24 +204,53 @@ test('reporter streams the answer card and finishes into a coloured status card'
   await reporter.begin()
   reporter.onTextDelta('hello')
   await reporter.flush(true)
-  assert.equal(transport.calls.edits.at(-1).payload.embeds[0].description, 'hello')
-  assert.match(transport.calls.edits.at(-1).payload.embeds[0].footer.text, /耗时 2\.0s/)
+
+  const streaming = transport.calls.edits.at(-1).payload
+  assert.equal(streaming.flags, 1 << 15, 'cards are sent as Components V2')
+  const streamingTexts = flattenTexts(streaming.components)
+  assert.ok(streamingTexts.includes('hello'), 'body is a Text Display')
+  assert.ok(streamingTexts.some((t) => /耗时 2\.0s/.test(t)), 'footer carries the elapsed time')
   // While running, the answer card carries the live stop button.
-  assert.equal(
-    transport.calls.edits.at(-1).payload.components[0].components[0].custom_id,
-    'dsh:stop:m1',
-  )
+  const stopId = findCustomId(streaming.components, 'dsh:stop:m1')
+  assert.ok(stopId, 'stop button is present while streaming')
 
   await reporter.finish('hello world', 'completed')
   const last = transport.calls.edits.at(-1)
   assert.equal(last.messageId, 'm1', 'final edit reuses the streaming message')
-  assert.equal(last.payload.embeds[0].title, '✅ 已完成')
-  assert.equal(last.payload.embeds[0].color, EMBED_COLORS.completed)
-  assert.match(last.payload.embeds[0].description, /hello world/)
-  // The final card drops the button. An empty array (not an omitted field) is
-  // required, or Discord keeps the components of the edited message.
-  assert.deepEqual(last.payload.components, [])
+  const finals = flattenTexts(last.payload.components)
+  assert.ok(finals.some((t) => /✅ 已完成/.test(t)), 'final card shows the completed title')
+  assert.ok(finals.some((t) => /hello world/.test(t)), 'final card carries the answer')
+  // The finished card must not carry the stop button any more.
+  assert.equal(findCustomId(last.payload.components, 'dsh:stop:m1'), undefined)
 })
+
+/** Collect every Text Display string in a component tree. */
+function flattenTexts(nodes) {
+  const out = []
+  const walk = (list) => {
+    for (const node of list || []) {
+      if (!node) continue
+      if (node.type === 10) out.push(String(node.content ?? ''))
+      if (node.components) walk(node.components)
+    }
+  }
+  walk(nodes)
+  return out
+}
+
+/** Find a button custom_id anywhere in a component tree. */
+function findCustomId(nodes, wanted) {
+  const walk = (list) => {
+    for (const node of list || []) {
+      if (!node) continue
+      if (node.custom_id === wanted) return node.custom_id
+      const nested = walk(node.components)
+      if (nested) return nested
+    }
+    return undefined
+  }
+  return walk(nodes)
+}
 
 test('tool calls render as one list card, one line per call', async () => {
   const transport = fakeTransport()
@@ -242,18 +271,23 @@ test('tool calls render as one list card, one line per call', async () => {
   assert.equal(reporter.tools.length, 2, 'both calls are retained')
 
   const toolEdit = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(toolEdit.payload.embeds.length, 1, 'the whole run is a single embed')
-  const embed = toolEdit.payload.embeds[0]
-  assert.equal(embed.title, '🛠 工具调用')
-  const lines = embed.description.split('\n')
-  assert.equal(lines.length, 2, 'one line per call')
-  assert.match(lines[0], /bash/)
-  assert.match(lines[1], /read/)
-  assert.match(embed.footer.text, /共 2 次/)
+  assert.equal(toolEdit.payload.flags, 1 << 15, 'the tool run is a Components V2 message')
+  const texts = flattenTexts(toolEdit.payload.components)
+  assert.ok(texts.some((t) => /🛠 工具调用/.test(t)), 'tool card carries its title')
+  const itemLines = texts
+    .join('\n')
+    .split('\n')
+    .filter((l) => l.startsWith('- '))
+  assert.equal(itemLines.length, 2, 'one line per call')
+  assert.match(itemLines[0], /bash/)
+  assert.match(itemLines[1], /read/)
+  assert.ok(texts.some((t) => /共 2 次/.test(t)), 'footer carries the call count')
 
   // A turn owns exactly ONE answer card however many tools it calls: earlier
   // versions opened a new card per result and left one-word fragments behind.
-  const answerCardSends = transport.calls.sends.filter((p) => p.embeds?.[0]?.title === '⏳ 正在生成…')
+  const answerCardSends = transport.calls.sends.filter((p) =>
+    flattenTexts(p.components).some((t) => /正在生成/.test(t)),
+  )
   assert.equal(answerCardSends.length, 0, 'tool results must not spawn extra answer cards')
   assert.equal(transport.calls.sends.length, 2, 'only the placeholder and the tool message are sent')
 
@@ -261,13 +295,13 @@ test('tool calls render as one list card, one line per call', async () => {
   reporter.onTextDelta('after the tools')
   await reporter.flush(true)
   assert.equal(transport.calls.edits.at(-1).messageId, 'm1')
-  assert.equal(transport.calls.edits.at(-1).payload.embeds[0].description, 'after the tools')
+  assert.ok(flattenTexts(transport.calls.edits.at(-1).payload.components).includes('after the tools'))
 
   await reporter.finish('done', 'completed')
   const stillThere = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(stillThere.payload.embeds.length, 1, 'finishing never deletes the tool list')
-  assert.match(stillThere.payload.embeds[0].description, /bash/)
-  assert.match(stillThere.payload.embeds[0].description, /read/)
+  const kept = flattenTexts(stillThere.payload.components).join('\n')
+  assert.match(kept, /bash/, 'finishing never deletes the tool list')
+  assert.match(kept, /read/)
 })
 
 test('reporter edit interval backs off for long cards and stays under 4.5s', () => {
@@ -728,4 +762,74 @@ test('wide tables still use a fenced block', async () => {
   const out = convertTables('| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |')
   assert.ok(out.startsWith('```text'))
   assert.ok(out.trimEnd().endsWith('```'))
+})
+
+test('components v2 payload sets the flag and drops content/embeds', async () => {
+  const { v2Payload, IS_COMPONENTS_V2, textDisplay } = await import('../src/discord/components-v2.js')
+  const payload = v2Payload([textDisplay('hi')])
+  assert.equal(payload.flags, IS_COMPONENTS_V2)
+  assert.equal(payload.flags, 32768)
+  assert.equal(payload.components.length, 1)
+  assert.equal(payload.content, undefined, 'Components V2 rejects content')
+  assert.equal(payload.embeds, undefined, 'Components V2 rejects embeds')
+})
+
+test('text display keeps markdown headings instead of downgrading them', async () => {
+  const { streamCard } = await import('../src/discord/cards-v2.js')
+  const payload = streamCard('# 项目分析\n\n## 概览\n正文', {})
+  const texts = flattenTexts(payload.components)
+  const joined = texts.join('\n')
+  // A Text Display renders full markdown, so the heading must survive verbatim.
+  assert.match(joined, /# 项目分析/)
+  assert.match(joined, /## 概览/)
+  assert.ok(!joined.includes('**项目分析**'), 'headings must not be flattened to bold')
+})
+
+test('cards use a container accent colour instead of embed colour', async () => {
+  const { finalCard, ACCENT } = await import('../src/discord/cards-v2.js')
+  const payload = finalCard('done', 'completed')
+  const root = payload.components[0]
+  assert.equal(root.type, 17, 'root is a container')
+  assert.equal(root.accent_color, ACCENT.completed)
+})
+
+test('separators divide body from footer', async () => {
+  const { streamCard } = await import('../src/discord/cards-v2.js')
+  const payload = streamCard('body', { model: 'm', startedAt: Date.now() - 1000 })
+  const kinds = payload.components[0].components.map((c) => c.type)
+  assert.ok(kinds.includes(14), 'a separator is emitted before the footer')
+})
+
+test('approval card nests buttons inside the container', async () => {
+  const { approvalCard } = await import('../src/discord/cards-v2.js')
+  const payload = approvalCard({
+    requestId: 'r1',
+    description: '删除文件',
+    approvePrefix: 'dsh:approve:',
+    rejectPrefix: 'dsh:reject:',
+  })
+  assert.equal(payload.flags, 1 << 15)
+  assert.equal(findCustomId(payload.components, 'dsh:approve:r1'), 'dsh:approve:r1')
+  assert.equal(findCustomId(payload.components, 'dsh:reject:r1'), 'dsh:reject:r1')
+})
+
+test('component budget is enforced before sending', async () => {
+  const { v2Payload, textDisplay, countComponents, MAX_TOTAL_COMPONENTS } =
+    await import('../src/discord/components-v2.js')
+  const { assertComponentBudget } = await import('../src/discord/cards-v2.js')
+  const payload = v2Payload([textDisplay('x')])
+  assert.equal(countComponents(payload.components), 1)
+  assert.doesNotThrow(() => assertComponentBudget(payload))
+  // Exceed the documented 40-component ceiling.
+  const huge = v2Payload(Array.from({ length: MAX_TOTAL_COMPONENTS + 1 }, () => textDisplay('x')))
+  assert.throws(() => assertComponentBudget(huge), /limit is 40/)
+})
+
+test('long bodies split across text displays without breaking surrogates', async () => {
+  const { textChunks, TEXT_DISPLAY_LIMIT } = await import('../src/discord/components-v2.js')
+  const body = 'x'.repeat(TEXT_DISPLAY_LIMIT + 500)
+  const chunks = textChunks(body)
+  assert.ok(chunks.length >= 2)
+  for (const chunk of chunks) assert.ok(chunk.length <= TEXT_DISPLAY_LIMIT)
+  assert.equal(chunks.join(''), body, 'no content lost when splitting')
 })

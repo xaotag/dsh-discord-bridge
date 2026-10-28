@@ -31,13 +31,15 @@ import {
   APPROVE_BUTTON_PREFIX,
   REJECT_BUTTON_PREFIX,
   STOP_BUTTON_PREFIX,
-  approvalPayload,
-  chunkDiscordText,
-  decidedApprovalPayload,
-  finalEmbed,
-  notificationPayload,
-  placeholderPayload,
 } from './src/discord/renderer.js'
+import {
+  approvalCard,
+  decidedApprovalCard,
+  finalCard,
+  noticeCard,
+  placeholderCard,
+  textChunks,
+} from './src/discord/cards-v2.js'
 import { readTextAttachments } from './src/discord/attachments.js'
 import { mentionsUser, stripMentions } from './src/discord/mention.js'
 import { AgentService, extractSessionId } from './src/bridge/agent-service.js'
@@ -137,7 +139,7 @@ export function apply(ctx, rawConfig = {}) {
         .editInteraction(target, text)
         .catch(() => transport.replyInteraction(target, text, ephemeral))
     }
-    return transport.send(target, notificationPayload(text), { replyToMessageId })
+    return transport.send(target, noticeCard(text), { replyToMessageId })
   }
 
   // ------------------------------------------------------------------ tasks
@@ -171,10 +173,10 @@ export function apply(ctx, rawConfig = {}) {
         await transport.edit(
           channelId,
           placeholder.messageId,
-          notificationPayload(`🧵 子任务已转到子线程：<#${thread.channelId}>`),
+          noticeCard(`🧵 子任务已转到子线程：<#${thread.channelId}>`),
         )
       } else {
-        await transport.send(channelId, notificationPayload(`🧵 子任务已转到子线程：<#${thread.channelId}>`), {
+        await transport.send(channelId, noticeCard(`🧵 子任务已转到子线程：<#${thread.channelId}>`), {
           replyToMessageId,
         })
       }
@@ -601,7 +603,7 @@ export function apply(ctx, rawConfig = {}) {
       // message (without another mention) continues the same conversation.
       pendingMentions.set(key, { userId: message.author.id, at: Date.now() })
       await transport
-        .send(channelId, notificationPayload(greeting(message.author.username)), {
+        .send(channelId, noticeCard(greeting(message.author.username)), {
           replyToMessageId: message.id,
         })
         .catch((error) => logger.warn('发送 greeting 失败:', error?.message || String(error)))
@@ -627,7 +629,7 @@ export function apply(ctx, rawConfig = {}) {
       if (deepseekCommand) {
         await transport.send(
           channelId,
-          notificationPayload(
+          noticeCard(
             'DeepSeek 原生 API 请使用 Slash Command：`/deepseek models list`、`/deepseek chat create` 等。',
           ),
           { replyToMessageId: message.id },
@@ -646,7 +648,7 @@ export function apply(ctx, rawConfig = {}) {
         })
         return
       }
-      const placeholder = await transport.send(channelId, placeholderPayload(), {
+      const placeholder = await transport.send(channelId, placeholderCard(), {
         replyToMessageId: message.id,
       })
       await runPrompt({
@@ -672,7 +674,7 @@ export function apply(ctx, rawConfig = {}) {
         error: error?.message || String(error),
       })
       await transport
-        .send(channelId, notificationPayload(`❌ 执行失败：${safeError(error)}`), {
+        .send(channelId, noticeCard(`❌ 执行失败：${safeError(error)}`), {
           replyToMessageId: message.id,
         })
         .catch(() => undefined)
@@ -846,7 +848,7 @@ export function apply(ctx, rawConfig = {}) {
           maxTokens: options.maxTokens,
         })
         const text = data?.choices?.[0]?.text || '(无文本输出)'
-        const chunks = chunkDiscordText(text)
+        const chunks = textChunks(text)
         await transport.editInteraction(interaction, chunks[0] || '(无文本输出)')
         for (const chunk of chunks.slice(1)) await transport.followUpInteraction(interaction, chunk, false)
         return
@@ -903,7 +905,7 @@ export function apply(ctx, rawConfig = {}) {
     try {
       const messageId = interaction.message?.id
       if (messageId) {
-        await transport.edit(channelId, messageId, decidedApprovalPayload(decision))
+        await transport.edit(channelId, messageId, decidedApprovalCard(decision))
       }
     } catch (error) {
       logger.warn('更新确认卡片失败:', error?.message || String(error))
@@ -950,9 +952,7 @@ export function apply(ctx, rawConfig = {}) {
       })
       if (stopped) {
         await transport
-          .editComponentReply(interaction, {
-            embeds: finalEmbed('已按你的请求停止当前任务。', 'cancelled'),
-          })
+          .editComponentReply(interaction, finalCard('已按你的请求停止当前任务。', 'cancelled'))
           .catch((error) =>
             logger.warn('按钮停止后更新卡片失败:', error?.message || String(error)),
           )
@@ -1171,12 +1171,14 @@ export function apply(ctx, rawConfig = {}) {
     if (!channelId) return 'timeout'
     const request = approvals.create({ channelId, userId, description })
     try {
-      const payload = approvalPayload({
+      const payload = approvalCard({
         requestId: request.id,
         title,
         description,
         footer,
         expiresAt: request.expiresAt,
+        approvePrefix: APPROVE_BUTTON_PREFIX,
+        rejectPrefix: REJECT_BUTTON_PREFIX,
       })
       const sent = await transport.send(channelId, payload)
       audit.record({
