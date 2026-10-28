@@ -1246,29 +1246,6 @@ test('channelForAgent maps a runtime agent to its channel', async () => {
   assert.equal(service.channelForAgent({ id: 'other' }), undefined)
 })
 
-test('both ask groups resolve their own option name', async () => {
-  const { normalizeInteraction } = await import('../src/discord/commands.js')
-  const make = (group, command, optionName, value) => ({
-    isChatInputCommand: () => true,
-    commandName: 'dsh',
-    options: {
-      getSubcommandGroup: () => group,
-      getSubcommand: () => command,
-      getString: () => null,
-      data: [
-        {
-          name: group,
-          type: 2,
-          options: [{ name: command, type: 1, options: [{ name: optionName, type: 3, value }] }],
-        },
-      ],
-    },
-  })
-  // /dsh task ask reads `text`; /dsh system ask reads `question`. Sharing a
-  // command name must not make one of them lose its argument.
-  assert.equal(normalizeInteraction(make('task', 'ask', 'text', '执行任务')).arg, '执行任务')
-  assert.equal(normalizeInteraction(make('system', 'ask', 'question', '选哪个？')).arg, '选哪个？')
-})
 
 test('a card never exceeds the 4000-char displayable text budget', async () => {
   const { finalCard, streamCard } = await import('../src/discord/cards-v2.js')

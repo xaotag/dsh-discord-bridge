@@ -439,44 +439,6 @@ export function apply(ctx, rawConfig = {}) {
         )
         return
       }
-      /**
-       * TEMPORARY probe: exercise the real user-questions path from Discord.
-       *
-       * Kept here rather than in a Web session so the blocking wait belongs to a
-       * Discord channel instead of the caller's own conversation. Remove after
-       * the flow is verified.
-       */
-      case 'system/ask': {
-        const questionText = String(arg || '配置选哪个？').trim()
-        const liveAgent = agents.liveAgentFor(channelId)
-        if (!liveAgent) {
-          await respond(target, '当前频道还没有活跃的 Agent，先发一条消息。', { replyToMessageId })
-          return
-        }
-        try {
-          const answer = await ctx.userQuestions.ask({
-            questions: [
-              {
-                id: 'probe',
-                header: '配置选择',
-                question: questionText,
-                options: [
-                  { label: 'A 方案', description: '走第一条路' },
-                  { label: 'B 方案', description: '走第二条路' },
-                ],
-              },
-            ],
-            agent: liveAgent,
-          })
-          await respond(target, `✅ 已收到答案：${JSON.stringify(answer.answers)}`, {
-            replyToMessageId,
-          })
-        } catch (error) {
-          await respond(target, `❌ 提问失败：${safeError(error)}`, { replyToMessageId })
-        }
-        return
-      }
-
       case 'system/confirm': {
         const action = String(arg || '').trim()
         if (!action) {

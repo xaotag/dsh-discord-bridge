@@ -38,13 +38,6 @@ export class AgentService {
     return undefined
   }
 
-  /** The live Agent for a channel, if this bridge has one open. */
-  liveAgentFor(channelId) {
-    if (!channelId) return undefined
-    const runtime = this.runtimes.get(channelId)
-    return runtime?.agent || runtime?.handle?.agent
-  }
-
   runtime(key, meta = {}) {
     let runtime = this.runtimes.get(key)
     if (!runtime) {
