@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { UNTRUSTED_INPUT_POLICY } from './untrusted.js'
+import { listModels, listReasoningEfforts } from './agent-catalog.js'
 
 /**
  * DSH Agent / model interaction module.
@@ -564,29 +565,14 @@ export class AgentService {
    * Reasoning efforts the current adapter advertises for this exact route.
    * Returned ids are the only values that survive `prepareCall()` validation.
    */
+  /** Selectable reasoning efforts for a route; see agent-catalog.js. */
   async listReasoningEfforts(provider, model) {
-    try {
-      const llm = this.ctx.get('llm')
-      if (!llm || !provider || !model) return []
-      // `listModels()` returns catalog entries without capability metadata, so
-      // resolve the exact route to read the adapter's selectable efforts.
-      const info = llm.resolveModelInfo
-        ? await llm.resolveModelInfo(provider, model)
-        : undefined
-      return (info?.reasoning?.efforts || []).map((effort) => String(effort.id))
-    } catch (error) {
-      this.logger.warn?.('读取推理等级列表失败:', error?.message || String(error))
-      return []
-    }
+    return listReasoningEfforts(this.ctx, this.logger, provider, model)
   }
 
+  /** Models a provider offers; see agent-catalog.js. */
   async listModels(provider) {
-    try {
-      return (await this.ctx.get('llm')?.listModels?.(provider)) || []
-    } catch (error) {
-      this.logger.warn?.('读取模型列表失败:', error?.message || String(error))
-      return []
-    }
+    return listModels(this.ctx, this.logger, provider)
   }
 
   observeStream({ agent, frame }) {
