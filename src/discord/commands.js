@@ -137,9 +137,6 @@ export const dshCommand = new SlashCommandBuilder()
           ),
       )
       .addSubcommand((c) =>
-        c.setName('demo').setDescription('发送一组真实审批按钮演示（含 SELinux 拒绝示例）'),
-      )
-      .addSubcommand((c) =>
         c
           .setName('sudo')
           .setDescription('以 root 执行命令（需在 Discord 审批后由守护进程执行）')
@@ -241,7 +238,6 @@ export function normalizeInteraction(interaction) {
     audit: ['system', 'audit'],
     confirm: ['system', 'confirm'],
     sudo: ['system', 'sudo'],
-    demo: ['system', 'demo'],
   }
   if (!group && legacy[command]) {
     const [g, c] = legacy[command]
