@@ -188,6 +188,24 @@ export class AgentService {
       }
     }
     this.installSelection(agentCtx, runtime)
+    // Diagnostic: which tools this Agent actually got. `ask_user_question` comes
+    // from the mounted preset, so a missing entry here means the preset did not
+    // compose it and the model could never call it.
+    try {
+      const tools = agentCtx?.agent?.tools ?? agentCtx?.tools
+      const names = Array.isArray(tools)
+        ? tools.map((t) => t?.name ?? t?.id ?? String(t))
+        : tools && typeof tools === 'object'
+          ? Object.keys(tools)
+          : []
+      if (names.length) {
+        this.logger.log?.(`[agent-tools] ${runtime.key}: ${names.includes('ask_user_question') ? '有' : '无'} ask_user_question（共 ${names.length} 个工具）`)
+      } else {
+        this.logger.log?.(`[agent-tools] ${runtime.key}: 无法读取工具列表`)
+      }
+    } catch {
+      /* diagnostic only */
+    }
     // DSH dispatches `user-questions/request` on the *agent's own scope*, so a
     // listener on the plugin root never sees it. Registering here — with the
     // context DSH hands to `setup` — puts the listener on the matching scope.
