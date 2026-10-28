@@ -215,20 +215,23 @@ export function normalizeInteraction(interaction) {
   const group = interaction.options.getSubcommandGroup(false)
   const command = interaction.options.getSubcommand()
   const arg =
-    command === 'ask' || command === 'steer'
-      ? readOption(interaction, 'text')
-      : command === 'set' || command === 'reasoning' || command === 'model'
-        ? readOption(interaction, 'value')
-        : command === 'create'
-          ? readOption(interaction, 'name')
-          : command === 'bind'
-            ? readOption(interaction, 'session')
-            : command === 'confirm'
-              ? readOption(interaction, 'action')
-              : command === 'sudo'
-                ? readOption(interaction, 'command')
-                : command === 'ask'
-                  ? readOption(interaction, 'question')
+    // `ask` exists in two groups with different option names: /dsh task ask
+    // reads `text`, /dsh system ask reads `question`. Accept either, or the
+    // second group would silently lose its argument.
+    command === 'ask'
+      ? readOption(interaction, 'text') ?? readOption(interaction, 'question')
+      : command === 'steer'
+        ? readOption(interaction, 'text')
+        : command === 'set' || command === 'reasoning' || command === 'model'
+          ? readOption(interaction, 'value')
+          : command === 'create'
+            ? readOption(interaction, 'name')
+            : command === 'bind'
+              ? readOption(interaction, 'session')
+              : command === 'confirm'
+                ? readOption(interaction, 'action')
+                : command === 'sudo'
+                  ? readOption(interaction, 'command')
                   : undefined
   // Backward compatibility for Discord clients still caching the pre-group
   // `/dsh status|new|model|reasoning|ask|steer|stop|help` command tree.
