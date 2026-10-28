@@ -153,7 +153,7 @@ export function downgradeHeadings(text) {
  * lists that wrap cleanly; wider ones stay in a fenced block whose columns are
  * padded by display width so CJK text lines up.
  */
-export function convertTables(text, { maxColumnWidth = 24, maxRows = 60, asList = true } = {}) {
+export function convertTables(text, { maxRows = 60 } = {}) {
   const lines = String(text ?? '').split('\n')
   const out = []
   let i = 0
@@ -176,7 +176,7 @@ export function convertTables(text, { maxColumnWidth = 24, maxRows = 60, asList 
         rows.push(splitRow(lines[j]))
         j += 1
       }
-      out.push(renderCodeTable(header, rows, { maxColumnWidth, maxRows, asList }))
+      out.push(renderCodeTable(header, rows, { maxRows }))
       i = j
       continue
     }
@@ -264,55 +264,42 @@ function clipToWidth(text, width) {
 }
 
 /**
- * Discord has no table syntax at all.
- *
- * Two shapes are available, both natively rendered:
- *
- *  - 2-column tables read as `- **key** value` lists, which wrap naturally and
- *    stay readable on mobile.
- *  - wider tables stay inside a fenced block, where alignment is preserved and
- *    now measured in display cells so CJK columns line up.
+ * Discord has no table syntax at all, on any surface, so a pipe table is always
+ * rewritten. Every table becomes a fenced record block.
  */
-function renderCodeTable(header, rows, { maxColumnWidth, maxRows, asList }) {
-  if (asList && header.length === 2) return renderListTable(header, rows, maxRows)
-
-  const columns = Math.max(header.length, ...rows.map((r) => r.length))
-  const widths = []
-  for (let c = 0; c < columns; c += 1) {
-    const candidates = [header[c] ?? '', ...rows.map((r) => r[c] ?? '')]
-    const longest = Math.max(...candidates.map((cell) => displayWidth(cell)), 1)
-    widths[c] = Math.min(longest, maxColumnWidth)
-  }
-  const fit = (cell, width) => padTo(clipToWidth(cell, width), width)
-
-  const body = []
-  body.push(header.map((cell, c) => fit(cell, widths[c])).join(' │ ').trimEnd())
-  body.push(widths.map((w) => '─'.repeat(w)).join('─┼─'))
-  for (const row of rows.slice(0, maxRows)) {
-    body.push(row.map((cell, c) => fit(cell, widths[c])).join(' │ ').trimEnd())
-  }
-  if (rows.length > maxRows) body.push(`… (+${rows.length - maxRows} rows)`)
-  return `${FENCE}text\n${body.join('\n')}\n${FENCE}`
+function renderCodeTable(header, rows, { maxRows }) {
+  return renderRecordTable(header, rows, maxRows)
 }
 
-/** `| key | value |` renders as a bullet list Discord wraps correctly. */
-function renderListTable(header, rows, maxRows) {
-  const [keyTitle, valueTitle] = header
+/**
+ * Lay a table out as records inside a fenced block.
+ *
+ * Each row is a bold first cell followed by `key：value` lines. Nothing is
+ * padded, so mixed CJK/Latin content cannot drift: Discord's monospace font
+ * does not give CJK glyphs exactly two ASCII cells, which is what made
+ * space-padded columns misalign. The whole thing sits in a fence so it reads as
+ * a distinct block rather than ordinary prose.
+ */
+function renderRecordTable(header, rows, maxRows) {
+  const visible = rows.slice(0, maxRows)
   const lines = []
-  // Subtext (the `-#` prefix) is Discord's own small-print style; it reads as a
-  // caption rather than a heading, which is what a table header is here.
-  if (keyTitle || valueTitle) {
-    const caption = [keyTitle, valueTitle].filter(Boolean).join(' · ')
-    lines.push(`-# ${caption}`)
+  visible.forEach((row, rowIndex) => {
+    if (rowIndex > 0) lines.push('')
+    const [first, ...rest] = row
+    const title = String(first ?? '').trim()
+    lines.push(title || '（未命名）')
+    rest.forEach((cell, index) => {
+      const value = String(cell ?? '').trim()
+      if (!value) return
+      const label = String(header[index + 1] ?? '').trim()
+      lines.push(label ? `  ${label}：${value}` : `  ${value}`)
+    })
+  })
+  if (rows.length > maxRows) {
+    if (lines.length) lines.push('')
+    lines.push(`… 另有 ${rows.length - maxRows} 行`)
   }
-  for (const row of rows.slice(0, maxRows)) {
-    const key = String(row[0] ?? '').trim()
-    const value = String(row[1] ?? '').trim()
-    if (!key && !value) continue
-    lines.push(`- **${key}**：${value}`)
-  }
-  if (rows.length > maxRows) lines.push(`-# …另有 ${rows.length - maxRows} 行`)
-  return lines.join('\n')
+  return `${FENCE}text\n${lines.join('\n')}\n${FENCE}`
 }
 
 /** `- [ ] task` → `- ☐ task`, `- [x] done` → `- ☑ done`. */

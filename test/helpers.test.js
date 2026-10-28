@@ -413,13 +413,14 @@ test('markdown adapter leaves inline hashes and code fences alone', () => {
   assert.ok(out.includes('const a = 1'))
 })
 
-test('markdown adapter turns a narrow table into a list', () => {
-  // Discord has no table syntax; a two-column table reads better as a list,
-  // which wraps natively instead of relying on monospace alignment.
+test('markdown adapter turns a narrow table into a fenced record block', () => {
+  // No Discord surface has table syntax, so every table becomes records inside
+  // a fence; padding columns would drift once CJK glyphs are mixed in.
   const out = adaptMarkdownForEmbed('| a | b |\n|---|---|\n| 1 | 2 |')
-  assert.ok(!out.includes('```'), 'narrow tables skip the code fence')
-  assert.ok(out.includes('- **1**'))
-  assert.ok(out.includes('2'))
+  assert.ok(out.startsWith('```text'), 'the table is fenced')
+  assert.ok(out.includes('1'), 'the key survives')
+  assert.ok(out.includes('2'), 'the value survives')
+  assert.ok(!out.includes('|---|'), 'the separator row is gone')
 })
 
 test('markdown adapter keeps an unterminated fence verbatim while streaming', () => {
@@ -722,28 +723,22 @@ test('displayWidth counts CJK and emoji as two cells', async () => {
   assert.equal(displayWidth('a名b'), 4)
 })
 
-test('wide tables align columns by display width, not string length', async () => {
+test('tables are laid out as records, never space-padded columns', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
-  const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |', { asList: false })
-  const lines = out.split('\n')
-  // Every content line must have the same separator position.
-  const pipeIndexes = lines
-    .filter((l) => l.includes('│'))
-    .map((l) => displayIndex(l, '│'))
-  assert.equal(new Set(pipeIndexes).size, 1, 'first column separator must line up')
+  const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |')
+  // A record layout has no column separators to misalign.
+  assert.ok(!out.includes('│'), 'no pipeline column separators')
+  assert.ok(!out.includes('─┼─'), 'no drawn column rule')
+  assert.match(out, /中文\.js/, 'row title present')
+  assert.match(out, /状态：/, 'field label present')
 })
 
-function displayIndex(line, needle) {
-  const idx = line.indexOf(needle)
-  return idx === -1 ? -1 : idx
-}
-
-test('two-column tables become bullet lists for native wrapping', async () => {
+test('two-column tables also render as fenced records', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
   const out = convertTables('| 键 | 值 |\n|---|---|\n| a | 1 |')
-  assert.ok(!out.includes('```'), 'no code fence for a two-column table')
-  assert.match(out, /^-# 键 · 值/m)
-  assert.match(out, /- \*\*a\*\*：1/)
+  assert.ok(out.startsWith('```text'), 'still fenced')
+  assert.match(out, /^a$/m, 'key becomes the record title')
+  assert.match(out, /值：1/, 'value keeps its column label')
 })
 
 test('wide tables still use a fenced block', async () => {

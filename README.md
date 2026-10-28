@@ -167,7 +167,7 @@ exactly as written; only syntax Discord lacks at all is converted:
 |---|---|---|
 | `# Heading` | **kept verbatim** | Text Display renders ATX headings |
 | Lists / nesting | **kept verbatim** | Text Display supports nested indentation |
-| Tables | `-# header` + `- **key**: value` | **No** Discord surface has table syntax |
+| Tables | one record per block inside a fence | **No** Discord surface has table syntax; padding columns drifts with CJK |
 | Code block content | untouched | Never rewritten |
 
 The important detail: column widths come from `displayWidth()`, which counts CJK
