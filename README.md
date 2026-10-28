@@ -255,6 +255,55 @@ Both buttons go through the same authorization check as every other command,
 and each decision is written to the audit log as `button.approve` /
 `button.reject`.
 
+## Privileged execution (`/dsh system sudo`)
+
+The bash tool runs under `no_new_privs`, so the DSH process **cannot** escalate:
+`sudo` is refused by the kernel before it ever reads a password, and neither
+`SUDO_ASKPASS` nor `NOPASSWD` helps. Privileged commands are therefore handed to
+a root daemon outside the sandbox:
+
+```text
+DSH bash  →  request written to ~/.dsh/privileged/queue/
+               ↓
+          Discord approval card ("approve")
+               ↓
+     dsh-privd (root, systemd) → verify HMAC → execute → write result
+               ↓
+          DSH reads back stdout / stderr / exit code
+```
+
+Usage:
+
+```text
+/dsh system sudo systemctl restart mihomo
+```
+
+**Install (once, from a host terminal):**
+
+```bash
+cd <plugin>/privd
+sudo ./install-privd.sh
+```
+
+The script generates the HMAC secret, installs the daemon and its systemd unit,
+and runs a root self-check.
+
+### Security model
+
+| Control | Effect |
+|---|---|
+| HMAC signature | A file dropped into the queue cannot run a command |
+| One-shot id | Request file removed after execution; no replay |
+| 5-minute expiry | Stale approvals cannot be executed |
+| Atomic claim | `rename` into `work/` before running; no double execution |
+| Audit log | `~/.dsh/privileged/audit.jsonl` records every command and outcome |
+| Output cap | 256 KB, so a command cannot flood the channel |
+| Human approval | Every command is explicitly approved in Discord first |
+
+The daemon deliberately runs without sandbox restrictions (it needs root), but
+it only acts on requests whose signature it can verify, and the secret is
+readable only by `root` and the target user (`0640`).
+
 ## DeepSeek official REST API group
 
 Calls `https://api.deepseek.com` directly, bypassing the DSH Agent, using the DSH

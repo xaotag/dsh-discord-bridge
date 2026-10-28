@@ -135,6 +135,14 @@ export const dshCommand = new SlashCommandBuilder()
           .addStringOption((o) =>
             o.setName('action').setDescription('要确认的操作描述').setRequired(true),
           ),
+      )
+      .addSubcommand((c) =>
+        c
+          .setName('sudo')
+          .setDescription('以 root 执行命令（需在 Discord 审批后由守护进程执行）')
+          .addStringOption((o) =>
+            o.setName('command').setDescription('要执行的命令').setRequired(true),
+          ),
       ),
   )
 
@@ -215,6 +223,7 @@ export function normalizeInteraction(interaction) {
     help: ['system', 'help'],
     audit: ['system', 'audit'],
     confirm: ['system', 'confirm'],
+    sudo: ['system', 'sudo'],
   }
   if (!group && legacy[command]) {
     const [g, c] = legacy[command]

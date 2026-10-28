@@ -243,6 +243,52 @@ DSH_DISCORD_AGENT_PRESET=standard
 两个按钮走与其它命令相同的鉴权，每次决定都写入审计日志
 （`button.approve` / `button.reject`）。
 
+## 提权执行（`/dsh system sudo`）
+
+DSH 的 bash 工具运行在 `no_new_privs` 沙箱中，进程内**无法**提权——`sudo` 会在
+读取密码之前被内核拒绝，`SUDO_ASKPASS` 和 `NOPASSWD` 都解决不了。因此提权操作
+交给沙箱外的 root 守护进程执行：
+
+```text
+DSH bash  →  写请求到 ~/.dsh/privileged/queue/
+               ↓
+          Discord 批准卡片（点「批准」）
+               ↓
+     dsh-privd（root，systemd 服务）→ 验签 → 执行 → 写结果
+               ↓
+          DSH 读回 stdout/stderr/退出码
+```
+
+用法：
+
+```text
+/dsh system sudo systemctl restart mihomo
+```
+
+**安装（只需一次，必须在宿主机终端）：**
+
+```bash
+cd <插件目录>/privd
+sudo ./install-privd.sh
+```
+
+脚本会生成 HMAC 密钥、安装守护进程与 systemd 服务，并做一次以 root 执行的自检。
+
+### 安全设计
+
+| 措施 | 说明 |
+|---|---|
+| HMAC 签名 | 请求体用共享密钥签名，队列里塞文件无法执行命令 |
+| 一次性 ID | 执行后删除请求文件，无法重放 |
+| 5 分钟过期 | 超时请求被拒绝，陈旧批准无效 |
+| 原子认领 | `rename` 到 `work/` 后才执行，避免并发重复执行 |
+| 审计日志 | `~/.dsh/privileged/audit.jsonl` 记录每条命令与结果 |
+| 输出截断 | 256 KB 上限，避免撑爆消息 |
+| 人工批准 | 每条命令都在 Discord 里显式批准后才执行 |
+
+守护进程刻意不加沙箱限制（它需要 root），但它只接受验签通过的请求，且密钥
+仅 `root:目标用户 0640`。
+
 ## DeepSeek 官方 REST API 命令组
 
 直连 `https://api.deepseek.com`，不经过 DSH Agent，使用 DSH Credentials

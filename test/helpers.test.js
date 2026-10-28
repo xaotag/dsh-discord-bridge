@@ -592,3 +592,48 @@ test('approval button custom_id stays under the Discord 100-char cap', async () 
   }
   assert.ok(row.components[0].custom_id.startsWith(APPROVE_BUTTON_PREFIX))
 })
+
+test('privileged protocol signs and verifies round-trip', async () => {
+  const { makeRequest, signRequest, verifyRequest } = await import('../src/bridge/privileged-protocol.js')
+  const crypto = await import('node:crypto')
+  const secret = crypto.randomBytes(32).toString('hex')
+  const body = makeRequest({ command: 'id -u', requestedBy: 'u1', channelId: 'c1' })
+  const signed = { ...body, sig: signRequest(body, secret) }
+  assert.equal(verifyRequest(signed, secret), true)
+})
+
+test('privileged protocol rejects tampered or unsigned requests', async () => {
+  const { makeRequest, signRequest, verifyRequest } = await import('../src/bridge/privileged-protocol.js')
+  const crypto = await import('node:crypto')
+  const secret = crypto.randomBytes(32).toString('hex')
+  const body = makeRequest({ command: 'id -u' })
+  const signed = { ...body, sig: signRequest(body, secret) }
+  // Swapping the command must invalidate the signature.
+  assert.equal(verifyRequest({ ...signed, command: 'rm -rf /' }, secret), false)
+  // A different secret must not verify.
+  assert.equal(verifyRequest(signed, crypto.randomBytes(32).toString('hex')), false)
+  // No signature at all.
+  assert.equal(verifyRequest({ ...body }, secret), false)
+})
+
+test('privileged protocol survives the JSON round-trip used on disk', async () => {
+  const { makeRequest, signRequest, verifyRequest } = await import('../src/bridge/privileged-protocol.js')
+  const crypto = await import('node:crypto')
+  const secret = crypto.randomBytes(32).toString('hex')
+  // No cwd/requestedBy: those keys must not appear at all, or signing and
+  // verifying would disagree after JSON serialization.
+  const body = makeRequest({ command: 'id' })
+  assert.ok(!('cwd' in body))
+  assert.ok(!('requestedBy' in body))
+  const signed = { ...body, sig: signRequest(body, secret) }
+  const readBack = JSON.parse(JSON.stringify(signed))
+  assert.equal(verifyRequest(readBack, secret), true)
+})
+
+test('privileged request carries a TTL and a unique id', async () => {
+  const { makeRequest } = await import('../src/bridge/privileged-protocol.js')
+  const a = makeRequest({ command: 'x' })
+  const b = makeRequest({ command: 'x' })
+  assert.notEqual(a.id, b.id)
+  assert.ok(a.expiresAt > a.createdAt)
+})

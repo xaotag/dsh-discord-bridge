@@ -9,6 +9,8 @@
  *   src/bridge/untrusted      -> untrusted-input policy primitives
  */
 import fsp from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { loadEnvFile, resolveConfig, authorized } from './src/config.js'
 import { StateStore } from './src/state-store.js'
 import { DiscordRateLimiter } from './src/discord/rate-limiter.js'
@@ -43,6 +45,7 @@ import { StreamReporter } from './src/bridge/stream-reporter.js'
 import { DeepSeekApiClient } from './src/deepseek/api-client.js'
 import { ThreadManager, shouldCreateThread } from './src/bridge/thread-manager.js'
 import { ApprovalRegistry } from './src/bridge/approval.js'
+import { PrivilegedClient } from './src/bridge/privileged-client.js'
 import { AuditLog } from './src/audit/db.js'
 import { UNTRUSTED_INPUT_POLICY } from './src/bridge/untrusted.js'
 
@@ -76,6 +79,10 @@ export function apply(ctx, rawConfig = {}) {
   transport.setAudit(audit)
   const agents = new AgentService({ ctx, config, state, logger, audit })
   const approvals = new ApprovalRegistry({ logger })
+  const privileged = new PrivilegedClient({
+    dshHome: process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
+    logger,
+  })
   const deepseek = new DeepSeekApiClient({ ctx, logger, audit })
   const threads = new ThreadManager({ transport, archiveMinutes: config.threadArchiveMinutes, logger })
 
@@ -436,6 +443,89 @@ export function apply(ctx, rawConfig = {}) {
         } else {
           await respond(target, '🚫 已拒绝，操作未执行。', { replyToMessageId })
         }
+        return
+      }
+      case 'system/sudo': {
+        const command = String(arg || '').trim()
+        if (!command) {
+          await respond(target, '用法：`/dsh system sudo <命令>`', { replyToMessageId })
+          return
+        }
+        const channelIdForApproval = target.channelId || channelId
+
+        if (!(await privileged.available())) {
+          await respond(
+            target,
+            '提权执行器未安装。请先运行 `sudo ./privd/install-privd.sh`（见插件 privd 目录）。',
+            { replyToMessageId },
+          )
+          return
+        }
+
+        const decision = await requestApproval({
+          channelId: channelIdForApproval,
+          userId: interaction?.user?.id,
+          title: '🔐 需要 root 权限',
+          description: `将要执行：\n\`\`\`bash\n${command.slice(0, 1500)}\n\`\`\``,
+          footer: '批准后由 root 守护进程执行',
+        })
+        audit.record({
+          category: 'discord',
+          action: 'sudo.decision',
+          status: decision === 'timeout' ? 'expired' : 'ok',
+          channelId: channelIdForApproval,
+          conversation: channelIdForApproval,
+          userId: interaction?.user?.id,
+          detail: { decision, commandLength: command.length },
+        })
+
+        if (decision !== 'approved') {
+          await respond(
+            target,
+            decision === 'timeout' ? '⏱ 确认已超时，未执行。' : '🚫 已拒绝，未执行。',
+            { replyToMessageId },
+          )
+          return
+        }
+
+        const startedAt = Date.now()
+        const result = await privileged.run({
+          command,
+          cwd: config.workspace,
+          requestedBy: interaction?.user?.id,
+          channelId: channelIdForApproval,
+        })
+        const elapsed = Date.now() - startedAt
+        audit.record({
+          category: 'discord',
+          action: 'sudo.exec',
+          status: result.status,
+          channelId: channelIdForApproval,
+          conversation: channelIdForApproval,
+          userId: interaction?.user?.id,
+          durationMs: elapsed,
+          detail: { exitCode: result.exitCode, commandLength: command.length },
+          ...(result.status !== 'ok' ? { error: result.message || result.stderr } : {}),
+        })
+
+        const lines = []
+        if (result.status === 'ok') {
+          lines.push(`✅ 执行完成（退出码 ${result.exitCode ?? 0}，用时 ${elapsed}ms）`)
+        } else if (result.status === 'timeout') {
+          lines.push('⏱ 等待执行结果超时。')
+        } else if (result.status === 'denied') {
+          lines.push('🚫 守护进程拒绝了该请求。')
+        } else {
+          lines.push(`❌ 执行失败${result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : ''}`)
+        }
+        if (result.message) lines.push(result.message)
+        if (result.stdout?.trim()) {
+          lines.push('', '**stdout**', '```', clipForDiscord(result.stdout), '```')
+        }
+        if (result.stderr?.trim()) {
+          lines.push('', '**stderr**', '```', clipForDiscord(result.stderr), '```')
+        }
+        await respond(target, lines.join('\n'), { replyToMessageId })
         return
       }
       case 'thread/create': {
@@ -1132,4 +1222,11 @@ export function apply(ctx, rawConfig = {}) {
 function safeError(error) {
   const message = error instanceof Error ? error.message : String(error)
   return message.replace(/[A-Za-z0-9_-]{20,}/g, '***').slice(0, 500)
+}
+
+/** Fit command output inside one Discord message, keeping the tail (errors). */
+function clipForDiscord(text, limit = 1500) {
+  const clean = String(text ?? '')
+  if (clean.length <= limit) return clean
+  return `…（前面已截断）\n${clean.slice(-limit)}`
 }
