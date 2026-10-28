@@ -86,16 +86,48 @@ export function placeholderCard(text = '⏳ 已接收，正在处理…') {
 /**
  * Streaming answer card.
  *
- * The body is the aggregated assistant Markdown, so headings, lists and tables
- * render as written. The footer carries model/effort/timing.
+ * Tool calls render **inline** at the top of the answer body rather than in a
+ * separate message, so one turn is one card. The body itself is the aggregated
+ * assistant Markdown; the footer carries model/effort/timing.
  */
-export function streamCard(text, { startedAt, model, reasoningEffort, caption, title, accentColor } = {}) {
+export function streamCard(
+  text,
+  { startedAt, model, reasoningEffort, caption, title, accentColor, tools, toolLines } = {},
+) {
+  const parts = []
+  const inline = toolLines === undefined ? inlineToolLines(tools) : toolLines
+  if (inline) parts.push(inline)
+  const body = String(text ?? '').trim()
+  if (body) parts.push(body)
   return cardPayload({
     accentColor: accentColor ?? ACCENT.thinking,
     title,
-    body: text,
+    body: parts.join('\n\n'),
     footer: footerBits({ startedAt, model, reasoningEffort, caption }),
   })
+}
+
+/**
+ * One subtext line per tool call, for inline display inside the answer card.
+ *
+ * `-#` is Discord's small-print style, so the run reads as a quiet log rather
+ * than competing with the answer. Argument values are never included — only the
+ * tool name and the caller-supplied description.
+ */
+export function inlineToolLines(tools = [], { maxLines = 12 } = {}) {
+  const list = Array.isArray(tools) ? tools : []
+  if (!list.length) return ''
+  const recent = list.slice(-maxLines)
+  const hidden = list.length - recent.length
+  const rows = recent.map((tool) => {
+    const name = String(tool?.name ?? 'tool').slice(0, 48)
+    const running = tool?.endedAt === undefined
+    const description = describeTool(tool?.args)
+    const glyph = running ? '⟳' : '✓'
+    return description ? `-# ${glyph} \`${name}\` · ${description}` : `-# ${glyph} \`${name}\``
+  })
+  if (hidden > 0) rows.unshift(`-# …更早的 ${hidden} 次已省略`)
+  return rows.join('\n')
 }
 
 /** Tool-run card: one line per call, no argument values. */
@@ -141,13 +173,18 @@ function describeTool(args) {
   return ''
 }
 
-/** Final answer card in one of the terminal states. */
+/** Final answer card in one of the terminal states, with inline tool lines. */
 export function finalCard(text, status = 'completed', meta = {}) {
   const { title, accent } = FINAL_STATES[status] ?? FINAL_STATES.completed
+  const parts = []
+  const inline = inlineToolLines(meta.tools)
+  if (inline) parts.push(inline)
+  const body = String(text ?? '').trim()
+  if (body) parts.push(body)
   return cardPayload({
     accentColor: accent,
     title,
-    body: text,
+    body: parts.join('\n\n'),
     footer: footerBits({ ...meta, caption: meta.caption }),
   })
 }

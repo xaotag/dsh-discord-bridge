@@ -252,11 +252,11 @@ function findCustomId(nodes, wanted) {
   return walk(nodes)
 }
 
-test('tool calls render as one list card, one line per call', async () => {
+test('tool calls render inline in the answer card, never as a second message', async () => {
   const transport = fakeTransport()
   const reporter = new StreamReporter({ transport, channelId: 'c1', intervalMs: 0, logger: { warn() {} } })
   await reporter.begin()
-  reporter.onToolCall('bash', '{"command":"ls"}')
+  reporter.onToolCall('bash', '{"description":"检查状态"}')
   await new Promise((r) => setTimeout(r, 5))
   reporter.onToolResult()
   await new Promise((r) => setTimeout(r, 5))
@@ -265,46 +265,32 @@ test('tool calls render as one list card, one line per call', async () => {
   reporter.onToolResult()
   await new Promise((r) => setTimeout(r, 5))
 
-  // The tool run lives in its own message, not in the answer card.
-  assert.ok(reporter.toolMessageId)
-  assert.notEqual(reporter.toolMessageId, reporter.messageId)
   assert.equal(reporter.tools.length, 2, 'both calls are retained')
+  // A turn is a single message: tool calls share the answer card.
+  assert.equal(reporter.toolMessageId, undefined, 'no separate tool message exists')
+  assert.equal(transport.calls.sends.length, 1, 'only the placeholder was sent')
 
-  const toolEdit = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(toolEdit.payload.flags, 1 << 15, 'the tool run is a Components V2 message')
-  const texts = flattenTexts(toolEdit.payload.components)
-  assert.ok(texts.some((t) => /🛠 工具调用/.test(t)), 'tool card carries its title')
-  // Calls are listed inside a fenced block so tool names stay monospace and
-  // aligned instead of each being its own bold bullet.
-  const joined = texts.join('\n')
-  assert.match(joined, /```/, 'the tool list is wrapped in a code block')
-  const fenced = joined.slice(joined.indexOf('```') + 3, joined.lastIndexOf('```'))
-  const itemLines = fenced.split('\n').filter((l) => l.trim().length > 0)
-  assert.equal(itemLines.length, 2, 'one line per call')
-  assert.match(itemLines[0], /bash/)
-  assert.match(itemLines[1], /read/)
-  assert.ok(!itemLines[0].startsWith('- '), 'lines are not markdown bullets any more')
-  assert.ok(texts.some((t) => /共 2 次/.test(t)), 'footer carries the call count')
-
-  // A turn owns exactly ONE answer card however many tools it calls: earlier
-  // versions opened a new card per result and left one-word fragments behind.
-  const answerCardSends = transport.calls.sends.filter((p) =>
-    flattenTexts(p.components).some((t) => /正在生成/.test(t)),
-  )
-  assert.equal(answerCardSends.length, 0, 'tool results must not spawn extra answer cards')
-  assert.equal(transport.calls.sends.length, 2, 'only the placeholder and the tool message are sent')
-
-  // Text after the calls keeps flowing into the original answer card.
-  reporter.onTextDelta('after the tools')
+  reporter.onTextDelta('# 结果')
   await reporter.flush(true)
-  assert.equal(transport.calls.edits.at(-1).messageId, 'm1')
-  assert.ok(flattenTexts(transport.calls.edits.at(-1).payload.components).includes('after the tools'))
+  const payload = transport.calls.edits.at(-1).payload
+  const texts = flattenTexts(payload.components)
+  const joined = texts.join('\n')
+
+  // Tool lines are subtext (`-#`) rendered above the answer body.
+  const toolLines = joined.split('\n').filter((l) => l.startsWith('-#') && /✓|⟳/.test(l))
+  assert.equal(toolLines.length, 2, 'one inline line per call')
+  assert.match(toolLines[0], /bash/)
+  assert.match(toolLines[1], /read/)
+  assert.ok(!joined.includes('🛠 工具调用'), 'there is no separate tool card title')
+
+  // Argument values are never rendered inline either.
+  assert.ok(!joined.includes('/a.js'), 'paths stay out of the card')
 
   await reporter.finish('done', 'completed')
-  const stillThere = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  const kept = flattenTexts(stillThere.payload.components).join('\n')
-  assert.match(kept, /bash/, 'finishing never deletes the tool list')
-  assert.match(kept, /read/)
+  const finals = flattenTexts(transport.calls.edits.at(-1).payload.components).join('\n')
+  assert.match(finals, /bash/, 'the tool history survives into the final card')
+  assert.match(finals, /read/)
+  assert.match(finals, /✅ 已完成/)
 })
 
 test('reporter edit interval backs off for long cards and stays under 4.5s', () => {
@@ -891,4 +877,35 @@ test('tool list code block survives the markdown adapter untouched', async () =>
   // A pipe inside the fence must not be mistaken for a table row.
   const src = ['```', '✓ bash  检查状态', '| not | a | table |', '```'].join('\n')
   assert.equal(adaptMarkdownForTextDisplay(src), src)
+})
+
+test('inlineToolLines renders subtext lines, not a code block or bullets', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const now = Date.now()
+  const out = inlineToolLines([
+    { name: 'bash', args: '{"description":"检查状态"}', endedAt: now },
+    { name: 'edit', args: '{"file_path":"/secret"}', endedAt: now },
+    { name: 'fetch', args: '{"url":"https://x"}' },
+  ])
+  const lines = out.split('\n')
+  assert.equal(lines.length, 3)
+  for (const line of lines) {
+    assert.ok(line.startsWith('-# '), 'every line uses Discord subtext syntax')
+    assert.ok(!line.startsWith('- '), 'not a markdown bullet')
+  }
+  assert.match(lines[0], /✓ `bash` · 检查状态/)
+  assert.match(lines[2], /⟳ `fetch`/, 'running call keeps the running glyph')
+  // Argument values never leak, only the caller-supplied description.
+  assert.ok(!out.includes('/secret'))
+  assert.ok(!out.includes('https://x'))
+  assert.ok(!out.includes('```'), 'no code fence for inline display')
+})
+
+test('inlineToolLines elides the oldest entries past the line cap', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const many = Array.from({ length: 20 }, (_, i) => ({ name: `t${i}`, endedAt: Date.now() }))
+  const out = inlineToolLines(many, { maxLines: 12 })
+  assert.match(out, /更早的 8 次已省略/)
+  const rows = out.split('\n').filter((l) => l.includes('`t'))
+  assert.equal(rows.length, 12)
 })

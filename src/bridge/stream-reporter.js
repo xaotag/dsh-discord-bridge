@@ -3,7 +3,6 @@ import {
   finalCard,
   placeholderCard,
   streamCard,
-  toolListCard,
   withStopRow,
 } from '../discord/cards-v2.js'
 
@@ -17,12 +16,10 @@ const LENGTH_BACKOFF_MAX_MULTIPLIER = 3
 /**
  * Presentation-only streaming reporter.
  *
- * One turn owns up to two kinds of messages:
- * - toolMessageId: the tool-run message. One embed per call, appended and
- *   edited in place; nothing is removed when a call finishes, so the transcript
- *   keeps every tool call as its own card.
- * - messageId: the answer card, streamed and finally recoloured to the turn
- *   status. Long answers spill into follow-up messages.
+ * One turn owns exactly one message: the answer card (messageId). Tool calls
+ * render **inline** at the top of that card as subtext lines, so a turn never
+ * spawns a second message for its tool run. The card is edited in place and
+ * finally recoloured to the turn status.
  *
  * It has no DSH or discord.js imports; transport is injected.
  */
@@ -44,7 +41,6 @@ export class StreamReporter {
     this.logger = logger
     this.showReasoning = showReasoning
     this.messageId = existingMessageId
-    this.toolMessageId = undefined
     this.model = model
     this.reasoningEffort = reasoningEffort
     this.startedAt = startedAt || Date.now()
@@ -165,6 +161,7 @@ export class StreamReporter {
       reasoningEffort: this.reasoningEffort,
       caption: this.caption(),
       title: '⏳ 正在生成…',
+      tools: this.tools,
     })
     // The stop button only makes sense while the turn is still running.
     if (!this.closed && this.stopButtonId) {
@@ -232,25 +229,16 @@ export class StreamReporter {
     await this.flushTools()
   }
 
-  /** Create-or-update the tool-run message. Never deletes a call. */
+  /**
+   * Re-render the answer card so newly started/finished tool calls appear
+   * inline. No separate message is created, so a turn stays one card.
+   */
   async flushTools() {
-    if (!this.tools.length) return
-    const target = toolListCard(this.tools)
-    if (this.toolMessageId) {
-      const messageId = this.toolMessageId
-      this.toolFlushing = this.toolFlushing
-        .catch(() => undefined)
-        .then(() => this.transport.edit(this.channelId, messageId, target))
-      await this.toolFlushing
-      return
-    }
+    if (!this.tools.length || !this.messageId) return
+    const messageId = this.messageId
     this.toolFlushing = this.toolFlushing
       .catch(() => undefined)
-      .then(async () => {
-        if (this.toolMessageId) return
-        const sent = await this.transport.send(this.channelId, target)
-        this.toolMessageId = sent.messageId
-      })
+      .then(() => this.transport.edit(this.channelId, messageId, this.buildAnswerPayload()))
     await this.toolFlushing
   }
 
@@ -273,6 +261,7 @@ export class StreamReporter {
       model: this.model,
       reasoningEffort: this.reasoningEffort,
       caption: this.toolCount > 0 ? `共调用 ${this.toolCount} 次工具，用时 ${formatDuration(elapsed)}` : undefined,
+      tools: this.tools,
     })
     await this.transport.edit(this.channelId, this.messageId, payload)
   }
