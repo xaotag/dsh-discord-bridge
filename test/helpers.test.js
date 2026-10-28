@@ -1208,3 +1208,40 @@ test('answered card shows a custom answer distinctly', async () => {
   assert.match(texts, /自定义/)
   assert.match(texts, /手写答案/)
 })
+
+test('question timeout is short enough to bound a stuck turn', async () => {
+  const { DEFAULT_QUESTION_TIMEOUT_MS } = await import('../src/bridge/question-registry.js')
+  // DSH blocks the agent on this promise, so a long timeout locks the session.
+  assert.ok(DEFAULT_QUESTION_TIMEOUT_MS <= 3 * 60 * 1000, 'timeout stays under three minutes')
+  assert.ok(DEFAULT_QUESTION_TIMEOUT_MS >= 60 * 1000, 'still long enough to answer')
+})
+
+test('a question for an agent the bridge does not own is delegated', async () => {
+  const { AgentService } = await import('../src/bridge/agent-service.js')
+  const service = new AgentService({
+    ctx: { on: () => () => {} },
+    config: { agentPreset: 'standard' },
+    state: { conversation: () => undefined },
+    logger: { log() {}, warn() {} },
+    audit: { record() {} },
+  })
+  // No runtimes: the agent belongs to someone else (for example the Web UI).
+  assert.equal(service.channelForAgent({ id: 'foreign-agent' }), undefined)
+  assert.equal(service.channelForAgent(undefined), undefined)
+})
+
+test('channelForAgent maps a runtime agent to its channel', async () => {
+  const { AgentService } = await import('../src/bridge/agent-service.js')
+  const service = new AgentService({
+    ctx: { on: () => () => {} },
+    config: { agentPreset: 'standard' },
+    state: { conversation: () => undefined },
+    logger: { log() {}, warn() {} },
+    audit: { record() {} },
+  })
+  const agent = { id: 'a1' }
+  service.runtime('chan-1', { channelId: 'chan-1' }).agent = agent
+  assert.equal(service.channelForAgent(agent), 'chan-1')
+  // A different agent object is not owned by this bridge.
+  assert.equal(service.channelForAgent({ id: 'other' }), undefined)
+})

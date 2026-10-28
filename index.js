@@ -69,6 +69,8 @@ export const inject = ['agents']
 export const Config = undefined
 
 const PLUGIN = '[dsh-discord-bridge]'
+/** Sentinel: this answerer cannot handle the request, call next(). */
+const DELEGATE = Symbol('delegate')
 /** A bare @Bot followed by a message within this window continues the same turn. */
 const MENTION_FOLLOWUP_WINDOW_MS = 60_000
 
@@ -1225,14 +1227,14 @@ export function apply(ctx, rawConfig = {}) {
     const questions = Array.isArray(request?.questions) ? request.questions : []
     if (!questions.length) return { answers: [] }
 
-    // The request carries the asking agent but no channel. Resolving through
-    // the live runtime gives the exact channel this conversation belongs to;
-    // the most-recently-active channel is only a fallback for an agent we do not
-    // own (for example one started outside this bridge).
-    const channelId = agents.channelForAgent(request?.agent) || lastActiveChannelId
+    // Only answer for an Agent this bridge owns. Falling back to the most
+    // recently active channel would steal questions asked in the Web UI and
+    // post them to Discord, where the person asking is not looking — that hangs
+    // both surfaces until the timeout.
+    const channelId = agents.channelForAgent(request?.agent)
     if (!channelId) {
-      logger.warn('收到用户提问但没有可用频道，按跳过处理')
-      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+      // Not ours: let the Web answerer handle it.
+      return DELEGATE
     }
 
     const entry = questions_.create({ questions, channelId })
@@ -1374,7 +1376,8 @@ export function apply(ctx, rawConfig = {}) {
    * DSH treats an unanswered question.
    */
   async function handleQuestionCustom(interaction) {
-    await transport.deferButton(interaction).catch(() => undefined)
+    // No defer here: opening a modal IS the initial response, and deferring
+    // first makes showModal fail with "the reply has already been sent".
     if (!authorized(config, interaction.user?.id, interaction.guildId || undefined, interaction.channelId || '')) {
       await transport.replyEphemeral(interaction, '你不在授权名单内。').catch(() => undefined)
       return
@@ -1506,7 +1509,8 @@ export function apply(ctx, rawConfig = {}) {
     if (!channelId) return next()
 
     try {
-      return await answerUserQuestions(request)
+      const answer = await answerUserQuestions(request)
+      return answer === DELEGATE ? next() : answer
     } catch (error) {
       logger.warn('处理 ask_user_question 失败，按跳过处理:', error?.message || String(error))
       return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
