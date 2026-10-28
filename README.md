@@ -152,8 +152,10 @@ list card — one line per call, `⟳` while running and `✓` once finished —
 with many calls stays readable instead of stacking near-identical embeds. The answer
 card is edited in place, so history is not lost on long tasks.
 
-Each line carries the tool name plus a short description, with a blank line between
-calls. The description is chosen in this order:
+Tool calls are **interleaved into the body at the point they occurred** (each call
+records the `textOffset` it started at), so the card reads as prose → call → the prose
+that followed, rather than a block of calls pinned to the top. Calls are separated by a
+blank line. The description is chosen in this order:
 
 1. an intent field the caller supplied (`description`, `summary`, `label`, `title`,
    `reason`, `purpose`)

@@ -1003,3 +1003,47 @@ test('a plain permission error keeps its message', async () => {
     /Permission denied/,
   )
 })
+
+test('tools are interleaved into the prose at the point they occurred', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  const first = '先分析项目结构。'
+  const second = `${first}\n\n发现问题：配置有 bug。`
+  const full = `${second}\n\n已修复。`
+  const tools = [
+    { name: 'bash', args: '{"command":"ls"}', endedAt: Date.now(), textOffset: first.length },
+    { name: 'read', args: '{"file_path":"/a/config.js"}', endedAt: Date.now(), textOffset: second.length },
+  ]
+  const out = interleaveTools(full, tools)
+
+  // Order must be: prose → tool → prose → tool → prose.
+  const order = out
+    .split('\n\n')
+    .map((part) => (/^-#/.test(part) ? 'T' : 'P'))
+    .join('')
+  assert.equal(order, 'PTPTP', 'prose and tool lines alternate in occurrence order')
+
+  assert.match(out, /先分析项目结构/)
+  assert.match(out, /✓ `bash`/)
+  assert.match(out, /发现问题/)
+  assert.match(out, /✓ `read` · \/a\/config\.js/)
+  assert.match(out, /已修复/)
+})
+
+test('tools without an offset still render before the body', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  const out = interleaveTools('正文内容', [{ name: 'bash', args: '{}', endedAt: Date.now() }])
+  assert.ok(out.startsWith('-#'), 'unanchored calls lead the body')
+  assert.match(out, /正文内容/)
+})
+
+test('interleaveTools is a no-op when there are no tools', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  assert.equal(interleaveTools('  只有正文  ', []), '只有正文')
+})
+
+test('an offset beyond the text length does not drop content', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  const out = interleaveTools('短正文', [{ name: 'bash', args: '{}', endedAt: Date.now(), textOffset: 999 }])
+  assert.match(out, /短正文/)
+  assert.match(out, /✓ `bash`/)
+})

@@ -86,25 +86,60 @@ export function placeholderCard(text = '⏳ 已接收，正在处理…') {
 /**
  * Streaming answer card.
  *
- * Tool calls render **inline** at the top of the answer body rather than in a
- * separate message, so one turn is one card. The body itself is the aggregated
- * assistant Markdown; the footer carries model/effort/timing.
+ * Tool calls are interleaved into the answer body by their character offset, so
+ * the card reads in the order things happened — prose, then the call it
+ * triggered, then the prose that followed. One turn stays one card.
  */
 export function streamCard(
   text,
   { startedAt, model, reasoningEffort, caption, title, accentColor, tools, toolLines } = {},
 ) {
-  const parts = []
-  const inline = toolLines === undefined ? inlineToolLines(tools) : toolLines
-  if (inline) parts.push(inline)
-  const body = String(text ?? '').trim()
-  if (body) parts.push(body)
+  const body = toolLines === undefined ? interleaveTools(text, tools) : composeBody(text, toolLines)
   return cardPayload({
     accentColor: accentColor ?? ACCENT.thinking,
     title,
-    body: parts.join('\n\n'),
+    body,
     footer: footerBits({ startedAt, model, reasoningEffort, caption }),
   })
+}
+
+/** Put a static tool block above the body (used when offsets are unknown). */
+function composeBody(text, toolLines) {
+  const parts = []
+  if (toolLines) parts.push(toolLines)
+  const body = String(text ?? '').trim()
+  if (body) parts.push(body)
+  return parts.join('\n\n')
+}
+
+/**
+ * Merge tool lines into the prose at the point each call occurred.
+ *
+ * Calls carry a `textOffset` recorded when they started. Splitting on those
+ * offsets reconstructs the transcript order without needing separate messages.
+ * Calls without an offset (older records) are placed at the start.
+ */
+export function interleaveTools(text, tools = []) {
+  const list = Array.isArray(tools) ? tools : []
+  const source = String(text ?? '')
+  if (!list.length) return source.trim()
+
+  const anchored = list
+    .map((tool, index) => ({ tool, index, at: Number.isFinite(tool?.textOffset) ? tool.textOffset : 0 }))
+    .sort((a, b) => a.at - b.at || a.index - b.index)
+
+  const parts = []
+  let cursor = 0
+  for (const { tool, at } of anchored) {
+    const cut = Math.min(Math.max(at, cursor), source.length)
+    const before = source.slice(cursor, cut).trim()
+    if (before) parts.push(before)
+    parts.push(inlineToolLines([tool]))
+    cursor = cut
+  }
+  const rest = source.slice(cursor).trim()
+  if (rest) parts.push(rest)
+  return parts.join('\n\n')
 }
 
 /**
@@ -228,18 +263,13 @@ function shortenPath(path, { maxWidth = 52 } = {}) {
   return `…${clean.slice(-(maxWidth - 1))}`
 }
 
-/** Final answer card in one of the terminal states, with inline tool lines. */
+/** Final answer card in one of the terminal states, with interleaved tool lines. */
 export function finalCard(text, status = 'completed', meta = {}) {
   const { title, accent } = FINAL_STATES[status] ?? FINAL_STATES.completed
-  const parts = []
-  const inline = inlineToolLines(meta.tools)
-  if (inline) parts.push(inline)
-  const body = String(text ?? '').trim()
-  if (body) parts.push(body)
   return cardPayload({
     accentColor: accent,
     title,
-    body: parts.join('\n\n'),
+    body: interleaveTools(text, meta.tools),
     footer: footerBits({ ...meta, caption: meta.caption }),
   })
 }

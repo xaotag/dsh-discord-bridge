@@ -114,6 +114,10 @@ export class StreamReporter {
       args: args || '{}',
       startedAt: Date.now(),
       endedAt: undefined,
+      // Character offset in the aggregated text where this call happened. The
+      // card interleaves tools with prose by this anchor, so the transcript
+      // reads in the order things actually occurred.
+      textOffset: this.text.length,
     })
     this.activeTool = this.tools.length - 1
     this.toolCount += 1
