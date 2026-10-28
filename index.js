@@ -38,8 +38,8 @@ import {
   finalCard,
   noticeCard,
   placeholderCard,
-  textChunks,
 } from './src/discord/cards-v2.js'
+import { textChunks } from './src/discord/components-v2.js'
 import { readTextAttachments } from './src/discord/attachments.js'
 import { mentionsUser, stripMentions } from './src/discord/mention.js'
 import { AgentService, extractSessionId } from './src/bridge/agent-service.js'
