@@ -10,20 +10,28 @@
  * Container's `accent_color`, so cards keep their status tint.
  */
 import {
+  CONTAINER_TEXT_LIMIT,
   MAX_TOTAL_COMPONENTS,
   TEXT_DISPLAY_LIMIT,
+  TEXT_INPUT_STYLE,
   actionRow,
   button,
   container,
   countComponents,
+  label,
+  modal,
   separator,
   stringSelect,
   textChunks,
   textDisplay,
+  textInput,
   v2Payload,
 } from './components-v2.js'
 import { suppressMentions } from './renderer.js'
 import { adaptMarkdownForTextDisplay } from './markdown.js'
+
+/** Subtext marker for a footer line; counts toward the text budget. */
+const FOOTER_PREFIX = '-# '
 
 /** Status tints, matching the embed palette used elsewhere. */
 export const ACCENT = {
@@ -52,22 +60,38 @@ export function cardPayload({
   emptyText = '（无内容）',
 } = {}) {
   const children = []
-  const cleanTitle = suppressMentions(String(title ?? '')).trim()
-  if (cleanTitle) {
-    children.push(textDisplay(`${'#'.repeat(clampHeading(headingLevel))} ${cleanTitle}`))
+  // Discord caps the *total* displayable text in a container at 4000 characters,
+  // not each Text Display. Budget the title and footer first, then give the body
+  // whatever is left, or a long answer plus its chrome is rejected outright
+  // (COMPONENT_DISPLAYABLE_TEXT_SIZE_EXCEEDED).
+  let budget = CONTAINER_TEXT_LIMIT
+  /** Reserve `prefix`+text against the budget; the prefix counts too. */
+  const take = (text, prefix = '') => {
+    const room = budget - prefix.length
+    if (room <= 0) return ''
+    const clipped = text.length <= room ? text : `${text.slice(0, Math.max(0, room - 1))}…`
+    budget -= prefix.length + clipped.length
+    return clipped
   }
+
+  const headingPrefix = `${'#'.repeat(clampHeading(headingLevel))} `
+  const cleanTitle = take(suppressMentions(String(title ?? '')).trim(), headingPrefix)
+  if (cleanTitle) children.push(textDisplay(`${headingPrefix}${cleanTitle}`))
+
+  // The footer prefix also occupies characters in the container.
+  const cleanFooter = take(suppressMentions(String(footer ?? '')).trim(), FOOTER_PREFIX)
+
   // Text Display renders full Markdown, so only table syntax is rewritten here;
   // headings and nesting are left exactly as the model wrote them.
   const adaptedBody = adaptMarkdownForTextDisplay(String(body ?? ''))
-  const cleanBody = suppressMentions(adaptedBody).trim()
+  const cleanBody = take(suppressMentions(adaptedBody).trim())
   for (const chunk of textChunks(cleanBody || emptyText)) {
     children.push(textDisplay(chunk))
   }
-  const cleanFooter = suppressMentions(String(footer ?? '')).trim()
   if (cleanFooter) {
     children.push(separator({ spacing: 1 }))
     // Subtext is Discord's own small-print style for a footer line.
-    children.push(textDisplay(`-# ${cleanFooter}`))
+    children.push(textDisplay(`${FOOTER_PREFIX}${cleanFooter}`))
   }
   for (const row of rows) if (row) children.push(row)
   return v2Payload([container(children, { accentColor })])
@@ -289,6 +313,9 @@ export function noticeCard(text, { title, accentColor = ACCENT.notice, footer } 
 /** Custom-ID prefixes for the question card's controls. */
 export const QUESTION_SELECT_PREFIX = 'dsh:q:sel:'
 export const QUESTION_SKIP_PREFIX = 'dsh:q:skip:'
+export const QUESTION_CUSTOM_PREFIX = 'dsh:q:custom:'
+/** The modal's custom_id; the request/question key is appended. */
+export const QUESTION_MODAL_PREFIX = 'dsh:q:modal:'
 
 /**
  * One DSH question rendered as a Discord card.
@@ -306,6 +333,7 @@ export function questionCard({
   expiresAt,
   selectPrefix = QUESTION_SELECT_PREFIX,
   skipPrefix = QUESTION_SKIP_PREFIX,
+  customPrefix = QUESTION_CUSTOM_PREFIX,
 } = {}) {
   const q = question ?? {}
   const options = Array.isArray(q.options) ? q.options : []
@@ -338,8 +366,16 @@ export function questionCard({
     )
   }
 
+  // Skip and custom share a row: neither is a listed option, both are ways out
+  // of the choice.
   children.push(
     actionRow([
+      button({
+        customId: `${customPrefix}${requestId}:${index}`,
+        label: '自定义',
+        style: 2,
+        emoji: { name: '✏️' },
+      }),
       button({
         customId: `${skipPrefix}${requestId}:${index}`,
         label: '跳过',
@@ -375,6 +411,42 @@ export function answeredQuestionCard({ question, selected = [], custom, skipped 
     accentColor: skipped ? ACCENT.cancelled : ACCENT.completed,
     title: q.header || '❓ 已作答',
     body: lines.join('\n\n'),
+  })
+}
+
+/**
+ * The modal that collects a free-text answer.
+ *
+ * A modal is the only Discord surface that accepts typed input, so "custom"
+ * opens one instead of trying to fit a text field into the card. The request id
+ * and question index travel in the modal's custom_id, which MODAL_SUBMIT echoes
+ * back untouched.
+ */
+export function questionCustomModal({
+  requestId,
+  question,
+  index,
+  modalPrefix = QUESTION_MODAL_PREFIX,
+} = {}) {
+  const q = question ?? {}
+  const fieldLabel = String(q.header || q.question || '你的回答').slice(0, 45)
+  return modal({
+    customId: `${modalPrefix}${requestId}:${index}`,
+    title: fieldLabel || '自定义回答',
+    // The input must sit inside a Label: Discord deprecated the Text Input's own
+    // `label` field, so a bare input would render without its question.
+    components: [
+      label({
+        text: fieldLabel || '自定义回答',
+        component: textInput({
+          customId: 'answer',
+          style: TEXT_INPUT_STYLE.PARAGRAPH,
+          placeholder: '输入你的回答…',
+          maxLength: 1000,
+          required: false,
+        }),
+      }),
+    ],
   })
 }
 

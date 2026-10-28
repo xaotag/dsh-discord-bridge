@@ -1148,3 +1148,138 @@ test('an answered question card drops the controls', async () => {
   const skipped = JSON.stringify(answeredQuestionCard({ question: { question: '?' }, skipped: true }))
   assert.match(skipped, /已跳过/)
 })
+
+test('question card offers both custom and skip', async () => {
+  const { questionCard, QUESTION_CUSTOM_PREFIX, QUESTION_SKIP_PREFIX } =
+    await import('../src/discord/cards-v2.js')
+  const payload = questionCard({
+    requestId: 'r1',
+    index: 0,
+    total: 1,
+    question: { id: 'q1', question: '选哪个？', options: [{ label: 'A' }] },
+  })
+  const json = JSON.stringify(payload)
+  assert.ok(json.includes(`${QUESTION_CUSTOM_PREFIX}r1:0`), 'custom button present')
+  assert.ok(json.includes(`${QUESTION_SKIP_PREFIX}r1:0`), 'skip button present')
+})
+
+test('the custom modal carries a text input keyed to the question', async () => {
+  const { questionCustomModal, QUESTION_MODAL_PREFIX } = await import('../src/discord/cards-v2.js')
+  const m = questionCustomModal({
+    requestId: 'r1',
+    index: 2,
+    question: { header: '选择方案', question: '用哪种？' },
+  })
+  assert.equal(m.custom_id, `${QUESTION_MODAL_PREFIX}r1:2`)
+  assert.equal(m.components.length, 1)
+  // Every modal input must be wrapped in a Label: Discord deprecated the Text
+  // Input's own `label` field, so a bare input renders with no question text.
+  const field = m.components[0]
+  assert.equal(field.type, 18, 'a Label wraps the input')
+  assert.equal(field.label, '选择方案')
+  const input = field.component
+  assert.equal(input.type, 4, 'a text input, the only modal input type')
+  assert.equal(input.custom_id, 'answer')
+  assert.equal(input.style, 2, 'paragraph style for free text')
+  assert.equal(input.label, undefined, 'the deprecated label field is not used')
+  assert.ok(m.title.length <= 45, 'Discord caps modal titles at 45 chars')
+})
+
+test('a custom answer is stored as free text, a blank one as a skip', async () => {
+  const { QuestionRegistry } = await import('../src/bridge/question-registry.js')
+  const registry = new QuestionRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+
+  const answered = registry.create({ channelId: 'c', questions: [{ id: 'q', question: '?' }] })
+  registry.answer(answered.id, 'q', { selected: [], custom: '我自己写的答案' })
+  const settled = await answered.answered
+  assert.deepEqual(settled.answers[0], { id: 'q', selected: [], custom: '我自己写的答案' })
+
+  // Blank input is a skip: no selection, no custom.
+  const blank = registry.create({ channelId: 'c', questions: [{ id: 'q', question: '?' }] })
+  registry.answer(blank.id, 'q', { selected: [], custom: undefined })
+  const blankSettled = await blank.answered
+  assert.deepEqual(blankSettled.answers[0], { id: 'q', selected: [] })
+})
+
+test('answered card shows a custom answer distinctly', async () => {
+  const { answeredQuestionCard } = await import('../src/discord/cards-v2.js')
+  const card = answeredQuestionCard({ question: { question: '?' }, custom: '手写答案', skipped: false })
+  const texts = flattenTexts(card.components).join('\n')
+  assert.match(texts, /自定义/)
+  assert.match(texts, /手写答案/)
+})
+
+test('question timeout is short enough to bound a stuck turn', async () => {
+  const { DEFAULT_QUESTION_TIMEOUT_MS } = await import('../src/bridge/question-registry.js')
+  // DSH blocks the agent on this promise, so a long timeout locks the session.
+  assert.ok(DEFAULT_QUESTION_TIMEOUT_MS <= 3 * 60 * 1000, 'timeout stays under three minutes')
+  assert.ok(DEFAULT_QUESTION_TIMEOUT_MS >= 60 * 1000, 'still long enough to answer')
+})
+
+test('a question for an agent the bridge does not own is delegated', async () => {
+  const { AgentService } = await import('../src/bridge/agent-service.js')
+  const service = new AgentService({
+    ctx: { on: () => () => {} },
+    config: { agentPreset: 'standard' },
+    state: { conversation: () => undefined },
+    logger: { log() {}, warn() {} },
+    audit: { record() {} },
+  })
+  // No runtimes: the agent belongs to someone else (for example the Web UI).
+  assert.equal(service.channelForAgent({ id: 'foreign-agent' }), undefined)
+  assert.equal(service.channelForAgent(undefined), undefined)
+})
+
+test('channelForAgent maps a runtime agent to its channel', async () => {
+  const { AgentService } = await import('../src/bridge/agent-service.js')
+  const service = new AgentService({
+    ctx: { on: () => () => {} },
+    config: { agentPreset: 'standard' },
+    state: { conversation: () => undefined },
+    logger: { log() {}, warn() {} },
+    audit: { record() {} },
+  })
+  const agent = { id: 'a1' }
+  service.runtime('chan-1', { channelId: 'chan-1' }).agent = agent
+  assert.equal(service.channelForAgent(agent), 'chan-1')
+  // A different agent object is not owned by this bridge.
+  assert.equal(service.channelForAgent({ id: 'other' }), undefined)
+})
+
+
+test('a card never exceeds the 4000-char displayable text budget', async () => {
+  const { finalCard, streamCard } = await import('../src/discord/cards-v2.js')
+  const totalText = (payload) => {
+    const out = []
+    const walk = (nodes) => {
+      for (const node of nodes || []) {
+        if (!node) continue
+        if (node.type === 10) out.push(String(node.content ?? ''))
+        if (node.components) walk(node.components)
+      }
+    }
+    walk(payload.components)
+    return out.join('').length
+  }
+
+  // Discord rejects the whole message when the container's text exceeds 4000,
+  // so the title prefix, footer prefix and body must share one budget.
+  for (const size of [100, 3900, 5000, 20000]) {
+    const card = finalCard('x'.repeat(size), 'completed', {
+      startedAt: Date.now() - 1000,
+      model: 'deepseek-flash',
+      tools: [{ name: 'bash', args: '{}', endedAt: Date.now() }],
+    })
+    assert.ok(totalText(card) <= 4000, `finalCard(${size}) stayed within budget`)
+  }
+  const streamed = streamCard('y'.repeat(9000), { title: '标题', footer: '脚注' })
+  assert.ok(totalText(streamed) <= 4000, 'streamCard stays within budget too')
+})
+
+test('a long body is truncated rather than dropped', async () => {
+  const { finalCard } = await import('../src/discord/cards-v2.js')
+  const card = finalCard('z'.repeat(10000), 'completed', {})
+  const texts = flattenTexts(card.components).join('')
+  assert.match(texts, /z{1000}/, 'the body still has content')
+  assert.match(texts, /…/, 'truncation is marked')
+})

@@ -33,9 +33,12 @@ import {
   STOP_BUTTON_PREFIX,
 } from './src/discord/renderer.js'
 import {
+  QUESTION_CUSTOM_PREFIX,
+  QUESTION_MODAL_PREFIX,
   QUESTION_SELECT_PREFIX,
   QUESTION_SKIP_PREFIX,
   answeredQuestionCard,
+  questionCustomModal,
   approvalCard,
   decidedApprovalCard,
   finalCard,
@@ -66,6 +69,8 @@ export const inject = ['agents']
 export const Config = undefined
 
 const PLUGIN = '[dsh-discord-bridge]'
+/** Sentinel: this answerer cannot handle the request, call next(). */
+const DELEGATE = Symbol('delegate')
 /** A bare @Bot followed by a message within this window continues the same turn. */
 const MENTION_FOLLOWUP_WINDOW_MS = 60_000
 
@@ -950,6 +955,12 @@ export function apply(ctx, rawConfig = {}) {
    */
   async function handleButton(interaction) {
     const customId = String(interaction?.customId || '')
+    if (customId.startsWith(QUESTION_CUSTOM_PREFIX)) {
+      await handleQuestionCustom(interaction).catch((error) =>
+        logger.warn('打开自定义输入失败:', error?.message || String(error)),
+      )
+      return true
+    }
     if (!customId.startsWith(STOP_BUTTON_PREFIX)) {
       return handleApprovalButton(interaction, customId)
     }
@@ -996,6 +1007,12 @@ export function apply(ctx, rawConfig = {}) {
   async function handleInteraction(interaction) {
     if (disposed) return
     if (interaction?.isButton?.() && (await handleButton(interaction))) return
+    if (interaction?.isModalSubmit?.() && String(interaction.customId || '').startsWith(QUESTION_MODAL_PREFIX)) {
+      await handleQuestionModalSubmit(interaction).catch((error) =>
+        logger.warn('处理自定义输入失败:', error?.message || String(error)),
+      )
+      return
+    }
     if (interaction?.isStringSelectMenu?.() && isQuestionCustomId(interaction.customId)) {
       await handleQuestionSelect(interaction).catch((error) =>
         logger.warn('记录问题答案失败:', error?.message || String(error)),
@@ -1210,14 +1227,14 @@ export function apply(ctx, rawConfig = {}) {
     const questions = Array.isArray(request?.questions) ? request.questions : []
     if (!questions.length) return { answers: [] }
 
-    // The request carries the asking agent but no channel. Resolving through
-    // the live runtime gives the exact channel this conversation belongs to;
-    // the most-recently-active channel is only a fallback for an agent we do not
-    // own (for example one started outside this bridge).
-    const channelId = agents.channelForAgent(request?.agent) || lastActiveChannelId
+    // Only answer for an Agent this bridge owns. Falling back to the most
+    // recently active channel would steal questions asked in the Web UI and
+    // post them to Discord, where the person asking is not looking — that hangs
+    // both surfaces until the timeout.
+    const channelId = agents.channelForAgent(request?.agent)
     if (!channelId) {
-      logger.warn('收到用户提问但没有可用频道，按跳过处理')
-      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+      // Not ours: let the Web answerer handle it.
+      return DELEGATE
     }
 
     const entry = questions_.create({ questions, channelId })
@@ -1271,6 +1288,14 @@ export function apply(ctx, rawConfig = {}) {
   function isQuestionCustomId(customId) {
     const id = String(customId ?? '')
     return id.startsWith(QUESTION_SELECT_PREFIX) || id.startsWith(QUESTION_SKIP_PREFIX)
+  }
+
+  /** Split `<prefix><requestId>:<questionIndex>` into its two parts. */
+  function parseQuestionKey(customId, prefix) {
+    const rest = String(customId ?? '').slice(prefix.length)
+    const sep = rest.lastIndexOf(':')
+    if (sep <= 0) return undefined
+    return { requestId: rest.slice(0, sep), index: Number(rest.slice(sep + 1)) }
   }
 
   /**
@@ -1343,6 +1368,92 @@ export function apply(ctx, rawConfig = {}) {
       .catch(() => undefined)
   }
 
+  /**
+   * "自定义" button: open the modal that collects typed input.
+   *
+   * The card stays untouched until the modal is submitted — abandoning the
+   * modal sends nothing, so the question remains answerable, which matches how
+   * DSH treats an unanswered question.
+   */
+  async function handleQuestionCustom(interaction) {
+    // No defer here: opening a modal IS the initial response, and deferring
+    // first makes showModal fail with "the reply has already been sent".
+    if (!authorized(config, interaction.user?.id, interaction.guildId || undefined, interaction.channelId || '')) {
+      await transport.replyEphemeral(interaction, '你不在授权名单内。').catch(() => undefined)
+      return
+    }
+    const parsed = parseQuestionKey(interaction.customId, QUESTION_CUSTOM_PREFIX)
+    const entry = parsed ? questions_.get(parsed.requestId) : undefined
+    const question = entry?.questions?.[parsed?.index]
+    if (!entry || !question) {
+      await transport.replyEphemeral(interaction, '这个问题已经失效或已作答。').catch(() => undefined)
+      return
+    }
+    try {
+      await transport.showModal(
+        interaction,
+        questionCustomModal({
+          requestId: parsed.requestId,
+          question,
+          index: parsed.index,
+        }),
+      )
+    } catch (error) {
+      logger.warn('打开自定义输入框失败:', error?.message || String(error))
+      await transport.replyEphemeral(interaction, '打开输入框失败，请重试。').catch(() => undefined)
+    }
+  }
+
+  /**
+   * MODAL_SUBMIT for a custom answer.
+   *
+   * A submitted-but-empty field is treated as a skip rather than an answer,
+   * because DSH encodes "no choice, no text" as skipped.
+   */
+  async function handleQuestionModalSubmit(interaction) {
+    const parsed = parseQuestionKey(interaction.customId, QUESTION_MODAL_PREFIX)
+    const entry = parsed ? questions_.get(parsed.requestId) : undefined
+    const question = entry?.questions?.[parsed?.index]
+    if (!entry || !question) {
+      await transport
+        .replyModalMessage(interaction, '这个问题已经失效或已作答。')
+        .catch(() => undefined)
+      return
+    }
+
+    const raw = interaction.fields?.getTextInputValue?.('answer') ?? ''
+    const custom = String(raw).trim()
+    const result = questions_.answer(parsed.requestId, question.id, {
+      selected: [],
+      custom: custom || undefined,
+    })
+
+    try {
+      const messageId = interaction.message?.id
+      if (messageId && interaction.channelId) {
+        await transport.edit(
+          interaction.channelId,
+          messageId,
+          answeredQuestionCard({
+            question,
+            selected: [],
+            custom,
+            skipped: !custom,
+          }),
+        )
+      }
+    } catch (error) {
+      logger.warn('更新问题卡片失败:', error?.message || String(error))
+    }
+
+    await transport
+      .replyModalMessage(interaction, custom ? `已记录：${custom.slice(0, 200)}` : '已跳过。')
+      .catch(() => undefined)
+    if (!result.ok) {
+      logger.warn('记录自定义答案失败:', result.reason || 'unknown')
+    }
+  }
+
   async function requestApproval({ channelId, userId, description, title, footer } = {}) {
     if (!channelId) return 'timeout'
     const request = approvals.create({ channelId, userId, description })
@@ -1398,7 +1509,8 @@ export function apply(ctx, rawConfig = {}) {
     if (!channelId) return next()
 
     try {
-      return await answerUserQuestions(request)
+      const answer = await answerUserQuestions(request)
+      return answer === DELEGATE ? next() : answer
     } catch (error) {
       logger.warn('处理 ask_user_question 失败，按跳过处理:', error?.message || String(error))
       return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }

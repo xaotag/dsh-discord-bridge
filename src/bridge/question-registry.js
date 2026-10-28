@@ -10,8 +10,15 @@
  * skipped, or when the timeout fires.
  */
 
-/** How long an unanswered question stays answerable. */
-export const DEFAULT_QUESTION_TIMEOUT_MS = 10 * 60 * 1000
+/**
+ * How long an unanswered question stays answerable.
+ *
+ * Deliberately short: DSH blocks the agent on this promise, so a question nobody
+ * can answer (a card the user cannot act on, a channel they are not watching)
+ * locks the whole turn. Two minutes bounds that worst case while still leaving
+ * plenty of time to pick an option.
+ */
+export const DEFAULT_QUESTION_TIMEOUT_MS = 2 * 60 * 1000
 
 let counter = 0
 function nextId() {

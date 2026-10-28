@@ -229,6 +229,34 @@ export class DiscordTransport {
     await this.limiter.run(() => interaction.deferUpdate(), 'button.defer')
   }
 
+  /**
+   * Open a modal in response to a button click.
+   *
+   * A modal opening is an initial response, not an update, so the interaction
+   * must not be deferred first — `showModal` is the acknowledgement.
+   */
+  async showModal(interaction, modal) {
+    await this.withAudit(
+      'discord',
+      'button.modal',
+      { channelId: interaction.channelId, userId: interaction.user?.id, customId: interaction.customId },
+      () => interaction.showModal(modal),
+    )
+  }
+
+  /** Ephemeral reply to a modal submission. */
+  async replyModalMessage(interaction, text) {
+    await this.withAudit(
+      'discord',
+      'modal.reply',
+      { channelId: interaction.channelId, userId: interaction.user?.id, customId: interaction.customId },
+      () => {
+        const payload = normalizePayload(noticeCard(text))
+        return interaction.reply({ ...payload, flags: payload.flags | (1 << 6) })
+      },
+    )
+  }
+
   /** Replace the card that owns a component interaction. */
   async editComponentReply(interaction, payload) {
     await this.withAudit(

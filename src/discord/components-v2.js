@@ -22,10 +22,19 @@ export const COMPONENT_TYPE = {
   ACTION_ROW: 1,
   BUTTON: 2,
   STRING_SELECT: 3,
+  TEXT_INPUT: 4,
   TEXT_DISPLAY: 10,
   SEPARATOR: 14,
   CONTAINER: 17,
+  LABEL: 18,
 }
+
+/** Text input styles: a single line, or a multi-line paragraph. */
+export const TEXT_INPUT_STYLE = { SHORT: 1, PARAGRAPH: 2 }
+
+/** Discord caps a modal at five components. */
+export const MODAL_MAX_COMPONENTS = 5
+export const MODAL_TITLE_LIMIT = 45
 
 /** A message may carry at most this many components in total. */
 export const MAX_TOTAL_COMPONENTS = 40
@@ -100,6 +109,66 @@ export function stringSelect({ customId, options = [], placeholder, multi = fals
   }
   if (placeholder) node.placeholder = String(placeholder).slice(0, 150)
   return node
+}
+
+/**
+ * A single text field.
+ *
+ * The bare input carries no visible title: Discord deprecated the `label` field
+ * on Text Input in favour of the Label component, so a field must be wrapped in
+ * `label()` to show what it is asking for.
+ */
+export function textInput({
+  customId,
+  style = TEXT_INPUT_STYLE.PARAGRAPH,
+  placeholder,
+  value,
+  required = false,
+  minLength,
+  maxLength = 1000,
+} = {}) {
+  const input = {
+    type: COMPONENT_TYPE.TEXT_INPUT,
+    custom_id: String(customId),
+    style,
+    required: Boolean(required),
+    max_length: Math.max(1, Math.min(Number(maxLength) || 1000, 4000)),
+  }
+  if (Number.isFinite(minLength)) input.min_length = Math.max(0, Math.min(Number(minLength), 4000))
+  if (placeholder) input.placeholder = String(placeholder).slice(0, 100)
+  if (value) input.value = String(value).slice(0, 4000)
+  return input
+}
+
+/**
+ * A labelled field for a modal.
+ *
+ * Every modal input must sit inside one of these: the label lives on this
+ * component, not on the input itself.
+ */
+export function label({ text, description, component } = {}) {
+  const node = {
+    type: COMPONENT_TYPE.LABEL,
+    label: String(text ?? '').slice(0, MODAL_TITLE_LIMIT),
+    component,
+  }
+  if (description) node.description = String(description).slice(0, 100)
+  return node
+}
+
+/**
+ * A modal (popup form).
+ *
+ * Modals are the only place Discord accepts a text input, so free-text answers
+ * have to go through one. `custom_id` identifies the submission in the
+ * MODAL_SUBMIT interaction.
+ */
+export function modal({ customId, title, components = [] } = {}) {
+  return {
+    custom_id: String(customId),
+    title: String(title ?? '输入').slice(0, MODAL_TITLE_LIMIT),
+    components: components.filter(Boolean).slice(0, MODAL_MAX_COMPONENTS),
+  }
 }
 
 /**
