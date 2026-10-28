@@ -99,6 +99,13 @@ export function streamCard(text, { startedAt, model, reasoningEffort, caption, t
 }
 
 /** Tool-run card: one line per call, no argument values. */
+/**
+ * Tool-run card.
+ *
+ * The list of calls is wrapped in a fenced code block: tool names are
+ * identifiers, and monospace keeps them aligned and visually distinct from
+ * prose, instead of each line being its own bold bullet.
+ */
 export function toolListCard(tools = [], { maxLines = 24, title = '🛠 工具调用' } = {}) {
   if (!tools.length) return cardPayload({ accentColor: ACCENT.working, title, body: '（无调用）' })
   const recent = tools.slice(-maxLines)
@@ -107,12 +114,14 @@ export function toolListCard(tools = [], { maxLines = 24, title = '🛠 工具�
     const name = String(tool?.name ?? 'unknown').slice(0, 64)
     const running = tool?.endedAt === undefined
     const description = describeTool(tool?.args)
-    return description ? `- ${running ? '⟳' : '✓'} \`${name}\` · ${description}` : `- ${running ? '⟳' : '✓'} \`${name}\``
+    const glyph = running ? '⟳' : '✓'
+    return description ? `${glyph} ${name}  ${description}` : `${glyph} ${name}`
   })
-  if (hidden > 0) lines.unshift(`-# …更早的 ${hidden} 次已省略`)
+  if (hidden > 0) lines.unshift(`… 更早的 ${hidden} 次已省略`)
   const running = tools.filter((tool) => tool?.endedAt === undefined).length
   const footer = [`共 ${tools.length} 次`, running > 0 ? `${running} 个运行中` : ''].filter(Boolean).join(' · ')
-  return cardPayload({ accentColor: ACCENT.working, title, body: lines.join('\n'), footer })
+  const body = ['```', ...lines, '```'].join('\n')
+  return cardPayload({ accentColor: ACCENT.working, title, body, footer })
 }
 
 /** Intent-only description; argument values are never rendered. */

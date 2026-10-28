@@ -140,7 +140,7 @@ All conversational messages are rendered as **Discord Embed cards** instead of p
 | Card | Title | Color | Content |
 |---|---|---|---|
 | Placeholder / answer (streaming) | `⏳ Generating…` | Blue `#5865F2` | Aggregating assistant text |
-| Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call: `✓ \`bash\` · description` |
+| Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call inside a code block: `✓ bash  description` |
 | Done | `✅ Completed` | Green `#57F287` | Final assistant text |
 | Stopped | `⏹️ Stopped` | Grey `#99AAB5` | Partial generated text |
 | Failed | `❌ Failed` | Red `#ED4245` | Redacted error message |

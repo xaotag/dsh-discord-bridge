@@ -274,13 +274,16 @@ test('tool calls render as one list card, one line per call', async () => {
   assert.equal(toolEdit.payload.flags, 1 << 15, 'the tool run is a Components V2 message')
   const texts = flattenTexts(toolEdit.payload.components)
   assert.ok(texts.some((t) => /🛠 工具调用/.test(t)), 'tool card carries its title')
-  const itemLines = texts
-    .join('\n')
-    .split('\n')
-    .filter((l) => l.startsWith('- '))
+  // Calls are listed inside a fenced block so tool names stay monospace and
+  // aligned instead of each being its own bold bullet.
+  const joined = texts.join('\n')
+  assert.match(joined, /```/, 'the tool list is wrapped in a code block')
+  const fenced = joined.slice(joined.indexOf('```') + 3, joined.lastIndexOf('```'))
+  const itemLines = fenced.split('\n').filter((l) => l.trim().length > 0)
   assert.equal(itemLines.length, 2, 'one line per call')
   assert.match(itemLines[0], /bash/)
   assert.match(itemLines[1], /read/)
+  assert.ok(!itemLines[0].startsWith('- '), 'lines are not markdown bullets any more')
   assert.ok(texts.some((t) => /共 2 次/.test(t)), 'footer carries the call count')
 
   // A turn owns exactly ONE answer card however many tools it calls: earlier
@@ -860,4 +863,32 @@ test('index.js loads, so the plugin entry has no unresolved imports', async () =
   const mod = await import('../index.js')
   assert.equal(mod.name, 'dsh-discord-bridge')
   assert.equal(typeof mod.apply, 'function')
+})
+
+test('tool list renders inside a fenced code block', async () => {
+  const { toolListCard } = await import('../src/discord/cards-v2.js')
+  const now = Date.now()
+  const payload = toolListCard([
+    { name: 'bash', args: '{"description":"检查状态"}', endedAt: now },
+    { name: 'edit', args: '{"file_path":"/a"}', endedAt: now },
+    { name: 'fetch', args: '{"url":"https://x"}' },
+  ])
+  const texts = flattenTexts(payload.components)
+  const body = texts.join('\n')
+  assert.match(body, /```/, 'list is fenced')
+  const inner = body.slice(body.indexOf('```') + 3, body.lastIndexOf('```'))
+  const lines = inner.split('\n').filter((l) => l.trim())
+  assert.equal(lines.length, 3, 'one line per call')
+  assert.match(lines[0], /✓ bash\s+检查状态/, 'finished call with its description')
+  assert.match(lines[2], /⟳ fetch/, 'running call keeps the running glyph')
+  // Argument values never appear, only the intent description.
+  assert.ok(!inner.includes('/a'), 'file paths are not rendered')
+  assert.ok(!inner.includes('https://x'), 'urls are not rendered')
+})
+
+test('tool list code block survives the markdown adapter untouched', async () => {
+  const { adaptMarkdownForTextDisplay } = await import('../src/discord/markdown.js')
+  // A pipe inside the fence must not be mistaken for a table row.
+  const src = ['```', '✓ bash  检查状态', '| not | a | table |', '```'].join('\n')
+  assert.equal(adaptMarkdownForTextDisplay(src), src)
 })
