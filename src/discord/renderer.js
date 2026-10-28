@@ -226,12 +226,50 @@ export function toolEmbed({ name, args, startedAt, endedAt, showArgs = 'summary'
 
 /** One tool name per line, newest last; a running call is marked with its glyph. */
 export const TOOL_LIST_MAX_LINES = 24
+/** Descriptions longer than this are clipped so the list stays scannable. */
+export const TOOL_SUMMARY_LIMIT = 48
 
-function toolListLine(tool, index) {
+/**
+ * Fields that carry a human-written *intent* rather than raw values.
+ *
+ * Only these are ever shown next to a tool name. A command string, a URL, a
+ * file path or a query are argument values, not descriptions, so they are
+ * deliberately excluded — the list shows what a call was for, never what it
+ * was pointed at.
+ */
+const DESCRIPTIVE_FIELDS = ['description', 'summary', 'label', 'title', 'reason', 'purpose']
+
+/**
+ * Extract the human-readable intent of a tool call, if the caller supplied one.
+ *
+ * Returns '' when the arguments carry no descriptive field, so the list line
+ * falls back to the bare tool name instead of echoing parameters.
+ */
+export function describeToolCall(args) {
+  const raw = String(args ?? '').trim()
+  if (!raw || raw === '{}') return ''
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return ''
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
+  for (const field of DESCRIPTIVE_FIELDS) {
+    const value = parsed[field]
+    if (typeof value === 'string' && value.trim()) {
+      return clipOneLine(value, TOOL_SUMMARY_LIMIT)
+    }
+  }
+  return ''
+}
+
+function toolListLine(tool) {
   const name = clipOneLine(tool?.name, 64) || 'unknown'
   const running = tool?.endedAt === undefined
   const glyph = running ? '⟳' : '✓'
-  return `${glyph} \`${name}\``
+  const description = describeToolCall(tool?.args)
+  return description ? `${glyph} \`${name}\` · ${description}` : `${glyph} \`${name}\``
 }
 
 /**

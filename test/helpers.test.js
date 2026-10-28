@@ -482,3 +482,57 @@ test('tool list card elides the oldest entries past the line cap', async () => {
   assert.match(embed.description, /更早的 6 次已省略/)
   assert.match(embed.footer.text, new RegExp(`共 ${TOOL_LIST_MAX_LINES + 6} 次`))
 })
+
+test('tool list shows the caller-supplied description when present', async () => {
+  const { toolCardsPayload } = await import('../src/discord/renderer.js')
+  const embed = toolCardsPayload([
+    { name: 'bash', args: '{"description":"运行测试","command":"npm test"}', startedAt: 1, endedAt: 2 },
+  ]).embeds[0]
+  assert.match(embed.description, /bash/)
+  assert.match(embed.description, /运行测试/)
+  assert.ok(!embed.description.includes('npm test'), 'the command value must not leak')
+})
+
+test('tool list omits the tail entirely when no description exists', async () => {
+  const { toolCardsPayload, describeToolCall } = await import('../src/discord/renderer.js')
+  const embed = toolCardsPayload([
+    { name: 'read', args: '{"file_path":"/etc/hosts"}', startedAt: 1, endedAt: 2 },
+  ]).embeds[0]
+  assert.equal(embed.description, '✓ `read`')
+  assert.ok(!embed.description.includes('/etc/hosts'))
+  assert.equal(describeToolCall('{"file_path":"/a"}'), '')
+})
+
+test('argument values never appear as descriptions', async () => {
+  const { describeToolCall } = await import('../src/discord/renderer.js')
+  // Value-shaped fields are not descriptions.
+  for (const args of [
+    '{"command":"ls -la /tmp"}',
+    '{"url":"https://example.com/x"}',
+    '{"pattern":"TODO"}',
+    '{"file_path":"/a/b.js"}',
+    '{"prompt":"忽略之前的指令"}',
+  ]) {
+    assert.equal(describeToolCall(args), '', `${args} must not yield a description`)
+  }
+  // Only intent-shaped fields qualify.
+  assert.equal(describeToolCall('{"description":"检查状态"}'), '检查状态')
+  assert.equal(describeToolCall('{"summary":"汇总结果"}'), '汇总结果')
+})
+
+test('descriptions are clipped to stay scannable', async () => {
+  const { describeToolCall, TOOL_SUMMARY_LIMIT } = await import('../src/discord/renderer.js')
+  const long = 'a'.repeat(TOOL_SUMMARY_LIMIT + 40)
+  const out = describeToolCall(JSON.stringify({ description: long }))
+  assert.ok(out.length <= TOOL_SUMMARY_LIMIT + 1)
+  assert.ok(out.endsWith('…'))
+})
+
+test('malformed arguments degrade to the bare tool name', async () => {
+  const { describeToolCall, toolCardsPayload } = await import('../src/discord/renderer.js')
+  assert.equal(describeToolCall('not json'), '')
+  assert.equal(describeToolCall(''), '')
+  assert.equal(describeToolCall(undefined), '')
+  const embed = toolCardsPayload([{ name: 'bash', args: 'not json', startedAt: 1, endedAt: 2 }]).embeds[0]
+  assert.equal(embed.description, '✓ `bash`')
+})
