@@ -89,15 +89,7 @@ export function apply(ctx, rawConfig = {}) {
   const limiter = new DiscordRateLimiter({ logger, maxRetries: config.maxRateLimitRetries })
   const transport = new DiscordTransport({ logger, rateLimiter: limiter })
   transport.setAudit(audit)
-  const agents = new AgentService({
-    ctx,
-    config,
-    state,
-    logger,
-    audit,
-    // Registered per Agent scope inside AgentService.setupAgent.
-    answerQuestions: (request, next) => answerUserQuestions(request, next),
-  })
+  const agents = new AgentService({ ctx, config, state, logger, audit })
   const approvals = new ApprovalRegistry({ logger })
   const questions_ = new QuestionRegistry({ logger })
   // `user-questions/request` carries no channel id, and a question card has to
@@ -1218,9 +1210,11 @@ export function apply(ctx, rawConfig = {}) {
     const questions = Array.isArray(request?.questions) ? request.questions : []
     if (!questions.length) return { answers: [] }
 
-    // Chat-style interfaces answer in the channel the turn runs in; the agent's
-    // scope carries no channel id, so fall back to the most recent one.
-    const channelId = lastActiveChannelId
+    // The request carries the asking agent but no channel. Resolving through
+    // the live runtime gives the exact channel this conversation belongs to;
+    // the most-recently-active channel is only a fallback for an agent we do not
+    // own (for example one started outside this bridge).
+    const channelId = agents.channelForAgent(request?.agent) || lastActiveChannelId
     if (!channelId) {
       logger.warn('收到用户提问但没有可用频道，按跳过处理')
       return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
@@ -1380,9 +1374,36 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
-  // `user-questions/request` is dispatched on the Agent's own scope, so the
-  // answerer is registered per Agent inside AgentService.setupAgent rather than
-  // here on the plugin root — a root listener never receives the event.
+  /**
+   * Answer `ask_user_question` from Discord.
+   *
+   * Scope-filtered dispatch admits untagged listeners — a root listener sees
+   * every agent's request (see `@deepseek-ai/dsh-scope`). Without any answerer
+   * DSH rejects with `no user-questions answerer accepted the request`, which is
+   * why a turn that called this tool used to hang forever.
+   *
+   * A request whose channel cannot be resolved is handed to `next()` so the Web
+   * answerer still gets a chance, and any failure settles as all-skipped: the
+   * agent must never be left waiting on a promise nobody will resolve.
+   */
+  ctx.on('user-questions/request', async (request, next) => {
+    if (disposed) return next()
+    const questions = Array.isArray(request?.questions) ? request.questions : []
+    if (!questions.length) return next()
+
+    const channelId = agents.channelForAgent(request?.agent)
+    logger.log(
+      `[user-questions] 收到 ${questions.length} 个问题 agent=${Boolean(request?.agent)} channel=${channelId || '(未匹配)'}`,
+    )
+    if (!channelId) return next()
+
+    try {
+      return await answerUserQuestions(request)
+    } catch (error) {
+      logger.warn('处理 ask_user_question 失败，按跳过处理:', error?.message || String(error))
+      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+    }
+  })
 
   ctx.effect(
     () => () => {
