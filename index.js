@@ -221,6 +221,9 @@ export function apply(ctx, rawConfig = {}) {
     const key = channelId
     const meta = { channelId: key, guildId, kind }
     const route = `${group}/${command}`
+    // `target` is the interaction for slash commands and may be a channel for
+    // text commands; read the user defensively so both shapes work.
+    const commandUserId = target?.user?.id || target?.author?.id || target?.member?.user?.id
     switch (route) {
       case 'system/help':
         await respond(target, HELP_TEXT, { replyToMessageId })
@@ -423,7 +426,7 @@ export function apply(ctx, rawConfig = {}) {
         const channelIdForApproval = target.channelId || channelId
         const decision = await requestApproval({
           channelId: channelIdForApproval,
-          userId: interaction?.user?.id,
+          userId: commandUserId,
           description: action,
           footer: '点击按钮决定是否继续',
         })
@@ -433,7 +436,7 @@ export function apply(ctx, rawConfig = {}) {
           status: decision === 'timeout' ? 'expired' : 'ok',
           channelId: channelIdForApproval,
           conversation: channelIdForApproval,
-          userId: interaction?.user?.id,
+          userId: commandUserId,
           detail: { decision, action },
         })
         if (decision === 'timeout') {
@@ -464,7 +467,7 @@ export function apply(ctx, rawConfig = {}) {
 
         const decision = await requestApproval({
           channelId: channelIdForApproval,
-          userId: interaction?.user?.id,
+          userId: commandUserId,
           title: '🔐 需要 root 权限',
           description: `将要执行：\n\`\`\`bash\n${command.slice(0, 1500)}\n\`\`\``,
           footer: '批准后由 root 守护进程执行',
@@ -475,7 +478,7 @@ export function apply(ctx, rawConfig = {}) {
           status: decision === 'timeout' ? 'expired' : 'ok',
           channelId: channelIdForApproval,
           conversation: channelIdForApproval,
-          userId: interaction?.user?.id,
+          userId: commandUserId,
           detail: { decision, commandLength: command.length },
         })
 
@@ -492,7 +495,7 @@ export function apply(ctx, rawConfig = {}) {
         const result = await privileged.run({
           command,
           cwd: config.workspace,
-          requestedBy: interaction?.user?.id,
+          requestedBy: commandUserId,
           channelId: channelIdForApproval,
         })
         const elapsed = Date.now() - startedAt
@@ -502,7 +505,7 @@ export function apply(ctx, rawConfig = {}) {
           status: result.status,
           channelId: channelIdForApproval,
           conversation: channelIdForApproval,
-          userId: interaction?.user?.id,
+          userId: commandUserId,
           durationMs: elapsed,
           detail: { exitCode: result.exitCode, commandLength: command.length },
           ...(result.status !== 'ok' ? { error: result.message || result.stderr } : {}),
