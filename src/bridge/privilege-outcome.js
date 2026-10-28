@@ -77,19 +77,62 @@ export function classifyPrivilegedOutcome(result = {}) {
   return 'failed'
 }
 
+/**
+ * Condense a denial into one short, readable line.
+ *
+ * A raw AVC record is hundreds of characters of key=value pairs; pasting it into
+ * a card buries the actual reason. Pull out the decisive parts — the syscall
+ * permission, the target, and the SELinux types — and drop the rest.
+ */
+export function summarizeDenial(result = {}) {
+  const text = [result.stderr, result.stdout, result.message].filter(Boolean).join('\n').trim()
+  if (!text) return '权限不足'
+
+  const avc = /avc:\s*denied\s*\{([^}]+)\}([^\n]*)/i.exec(text)
+  if (avc) {
+    const permission = avc[1].trim()
+    const rest = avc[2] || ''
+    const field = (key) => {
+      const m = new RegExp(`${key}="?([^"\\s]+)"?`).exec(rest)
+      return m ? m[1] : undefined
+    }
+    const target = field('name') || field('path') || field('saddr')
+    const source = field('scontext')
+    const targetType = field('tcontext')
+    const parts = [`SELinux 拒绝 ${permission}`]
+    if (target) parts.push(`目标 ${target}`)
+    if (source && targetType) parts.push(`${shortenContext(source)} → ${shortenContext(targetType)}`)
+    return parts.join(' · ')
+  }
+
+  const line = text.split('\n')[0].trim()
+  return clipLine(line, 140) || '权限不足'
+}
+
+/** `system_u:system_r:unconfined_t:s0` → `unconfined_t`. */
+function shortenContext(context) {
+  const parts = String(context).split(':')
+  return parts[2] || context
+}
+
+function clipLine(text, limit) {
+  const clean = String(text ?? '').trim()
+  if (clean.length <= limit) return clean
+  return `${clean.slice(0, limit - 1)}…`
+}
+
 /** One-line human summary of a privileged outcome. */
 export function describePrivilegedOutcome(result = {}) {
   if (result.status === 'ok') {
     return `已执行（退出码 ${result.exitCode ?? 0}）`
   }
   if (result.status === 'denied') {
-    return result.message || '守护进程拒绝了该请求。'
+    return clipLine(result.message, 140) || '守护进程拒绝了该请求。'
   }
   if (looksLikePermissionDenial(result)) {
-    const detail = (result.stderr || result.stdout || result.message || '').trim().split('\n')[0]
-    return `系统拒绝执行：${detail || '权限不足'}`
+    return `系统拒绝执行：${summarizeDenial(result)}`
   }
   if (result.status === 'timeout') return '等待结果超时。'
   const detail = (result.stderr || result.message || '').trim().split('\n')[0]
-  return `执行失败${result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : ''}${detail ? `：${detail}` : ''}`
+  return `执行失败${result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : ''}${detail ? `：${clipLine(detail, 140)}` : ''}`
 }

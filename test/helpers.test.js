@@ -945,3 +945,30 @@ test('decidedApprovalCard renders the denied state', async () => {
   const rejected = flattenTexts(decidedApprovalCard('rejected').components).join('\n')
   assert.match(rejected, /已拒绝/)
 })
+
+test('an AVC denial is condensed into a readable line', async () => {
+  const { summarizeDenial, describePrivilegedOutcome } = await import('../src/bridge/privilege-outcome.js')
+  const avc = {
+    status: 'error',
+    exitCode: 13,
+    stderr:
+      'type=AVC msg=audit(1793192000.123:456): avc:  denied  { read } for  pid=12345 comm="cat" name="shadow" scontext=system_u:system_r:unconfined_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0',
+  }
+  const summary = summarizeDenial(avc)
+  assert.match(summary, /SELinux 拒绝 read/)
+  assert.match(summary, /目标 shadow/)
+  assert.match(summary, /unconfined_t → shadow_t/)
+  // The raw key=value dump must not survive into the card.
+  assert.ok(!summary.includes('ino='), 'audit fields are dropped')
+  assert.ok(!summary.includes('msg=audit'), 'audit prefix is dropped')
+  assert.ok(summary.length < 120, 'summary stays short')
+  assert.match(describePrivilegedOutcome(avc), /系统拒绝执行/)
+})
+
+test('a plain permission error keeps its message', async () => {
+  const { summarizeDenial } = await import('../src/bridge/privilege-outcome.js')
+  assert.match(
+    summarizeDenial({ stderr: 'cat: /etc/shadow: Permission denied' }),
+    /Permission denied/,
+  )
+})
