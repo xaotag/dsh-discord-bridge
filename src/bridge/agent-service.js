@@ -197,16 +197,6 @@ export class AgentService {
       }
     }
     this.installSelection(agentCtx, runtime)
-    // Diagnostic: what this Agent actually exposes.
-    try {
-      const keys = Object.keys(agentCtx ?? {})
-      const agent = agentCtx?.agent
-      this.logger.log?.(
-        `[agent-diag] key=${runtime.key} ctxKeys=${keys.slice(0, 12).join('|') || '(none)'} hasAgent=${Boolean(agent)}`,
-      )
-    } catch (error) {
-      this.logger.log?.(`[agent-diag] 读取失败: ${error?.message || String(error)}`)
-    }
   }
 
   /**
