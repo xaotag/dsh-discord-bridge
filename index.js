@@ -462,31 +462,43 @@ export function apply(ctx, rawConfig = {}) {
        * in-memory registry exists — a card sent from elsewhere would always
        * report "already handled".
        */
+      /**
+       * Demo approvals, all backed by real execution.
+       *
+       * Every card is registered in this process (the registry lives here), and
+       * every command really runs through the privileged daemon. Case B is the
+       * interesting one: /sys is a read-only kernel filesystem, so the write
+       * fails with a genuine EACCES even as root — a real permission wall, not
+       * a simulated one.
+       */
       case 'system/demo': {
         const channelIdForApproval = target.channelId || channelId
         const demos = [
           {
-            title: '🧪 演示 A：普通确认',
-            description: '点**批准**或**拒绝**，卡片会立即变成对应状态。',
+            title: '🧪 演示 A：拒绝路径',
+            description: '点**拒绝**即可看到红色「已拒绝」状态与临时提示；点批准则显示批准成功。',
             footer: '真实注册，点击有回调',
+            command: undefined,
           },
           {
-            title: '🧪 演示 B：SELinux 拒绝',
+            title: '🧪 演示 B：真实权限拒绝',
             description: [
-              '批准后**故意**按 SELinux 拒绝处理，展示 denied 状态。',
+              '以 root 写入只读的内核文件系统。',
               '',
               '```bash',
-              'cat /etc/shadow',
+              'touch /sys/kernel/dsh-demo',
               '```',
+              '',
+              '`/sys` 是只读的，即使是 root 也会被内核拒绝。',
             ].join('\n'),
-            footer: '模拟 AVC 拒绝，不会真的执行',
-            simulate: 'selinux',
+            footer: '真实执行，真实失败',
+            command: 'touch /sys/kernel/dsh-demo',
           },
           {
-            title: '🧪 演示 C：执行成功',
-            description: ['批准后以 root 执行 `id -u`。', '', '```bash', 'id -u', '```'].join('\n'),
+            title: '🧪 演示 C：真实成功',
+            description: ['以 root 执行 `id -u`。', '', '```bash', 'id -u', '```'].join('\n'),
             footer: '真实执行',
-            simulate: 'run',
+            command: 'id -u',
           },
         ]
 
@@ -499,45 +511,55 @@ export function apply(ctx, rawConfig = {}) {
             footer: demo.footer,
           })
           if (decision !== 'approved') {
-            await respond(target, decision === 'timeout' ? '⏱ 演示 A 已超时。' : '🚫 演示已拒绝。', {
+            await respond(target, decision === 'timeout' ? '⏱ 演示已超时。' : '🚫 演示已拒绝。', {
               replyToMessageId,
             })
             continue
           }
-          if (demo.simulate === 'selinux') {
-            // A realistic AVC record, so the classifier and summariser are
-            // exercised without touching the host's SELinux policy.
-            const denial = {
-              status: 'error',
-              exitCode: 13,
-              stderr:
-                'type=AVC msg=audit(1793192000.123:456): avc:  denied  { read } for  pid=12345 comm="cat" name="shadow" dev="sda1" ino=1234567 scontext=system_u:system_r:unconfined_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0',
-            }
-            const lines = ['⛔ 已批准，但无权限执行', describePrivilegedOutcome(denial)]
-            const hint = selinuxHint(denial)
+          if (!demo.command) {
+            await respond(target, '✅ 已批准。', { replyToMessageId })
+            continue
+          }
+
+          const startedAt = Date.now()
+          const result = await privileged.run({
+            command: demo.command,
+            requestedBy: commandUserId,
+            channelId: channelIdForApproval,
+          })
+          const elapsed = Date.now() - startedAt
+          const outcome = classifyPrivilegedOutcome(result)
+          audit.record({
+            category: 'discord',
+            action: 'demo.exec',
+            status: outcome,
+            channelId: channelIdForApproval,
+            conversation: channelIdForApproval,
+            userId: commandUserId,
+            durationMs: elapsed,
+            detail: { exitCode: result.exitCode, commandLength: demo.command.length },
+          })
+
+          const lines = []
+          if (outcome === 'approved') {
+            lines.push(`✅ 已批准并执行（退出码 ${result.exitCode ?? 0}，用时 ${elapsed}ms）`)
+            const out = (result.stdout || '').trim()
+            if (out) lines.push('', '```', out, '```')
+          } else if (outcome === 'denied') {
+            lines.push('⛔ 已批准，但无权限执行')
+            lines.push(describePrivilegedOutcome(result))
+            const hint = selinuxHint(result)
             if (hint) lines.push('', hint)
-            await respond(target, lines.join('\n'), { replyToMessageId })
-            continue
+            const err = (result.stderr || '').trim()
+            if (err) lines.push('', '**stderr**', '```', clipForDiscord(err), '```')
+          } else {
+            lines.push(`❌ 执行失败${result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : ''}`)
+            const detail = describePrivilegedOutcome(result)
+            if (detail) lines.push(detail)
+            const err = (result.stderr || '').trim()
+            if (err) lines.push('', '```', clipForDiscord(err), '```')
           }
-          if (demo.simulate === 'run') {
-            const result = await privileged.run({
-              command: 'id -u',
-              requestedBy: commandUserId,
-              channelId: channelIdForApproval,
-            })
-            const outcome = classifyPrivilegedOutcome(result)
-            await respond(
-              target,
-              [
-                outcome === 'approved'
-                  ? `✅ 已批准并执行\n\`\`\`\n${(result.stdout || '').trim() || '(无输出)'}\n\`\`\``
-                  : `⛔ ${describePrivilegedOutcome(result)}`,
-              ].join('\n'),
-              { replyToMessageId },
-            )
-            continue
-          }
-          await respond(target, '✅ 演示完成：批准已生效。', { replyToMessageId })
+          await respond(target, lines.join('\n'), { replyToMessageId })
         }
         return
       }
