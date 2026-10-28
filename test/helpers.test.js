@@ -1047,3 +1047,104 @@ test('an offset beyond the text length does not drop content', async () => {
   assert.match(out, /短正文/)
   assert.match(out, /✓ `bash`/)
 })
+
+test('question registry settles with one answer per question', async () => {
+  const { QuestionRegistry } = await import('../src/bridge/question-registry.js')
+  const registry = new QuestionRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+  const entry = registry.create({
+    channelId: 'c1',
+    questions: [
+      { id: 'q1', question: '方案？', options: [{ label: '保守' }, { label: '激进' }] },
+      { id: 'q2', question: '范围？', options: [{ label: '全部' }] },
+    ],
+  })
+  assert.equal(registry.size, 1)
+
+  // Answering the first question leaves the request pending.
+  const first = registry.answer(entry.id, 'q1', { selected: ['保守'] })
+  assert.equal(first.ok, true)
+  assert.equal(first.next, 1)
+
+  const second = registry.answer(entry.id, 'q2', { selected: ['全部'] })
+  assert.equal(second.next, -1)
+
+  const settled = await entry.answered
+  assert.equal(settled.answers.length, 2, 'one item per question')
+  assert.deepEqual(settled.answers[0], { id: 'q1', selected: ['保守'] })
+  assert.deepEqual(settled.answers[1], { id: 'q2', selected: ['全部'] })
+  assert.equal(registry.size, 0)
+})
+
+test('an untouched question settles as skipped, not missing', async () => {
+  const { QuestionRegistry } = await import('../src/bridge/question-registry.js')
+  const registry = new QuestionRegistry({ timeoutMs: 40, logger: { warn() {} } })
+  const entry = registry.create({
+    channelId: 'c1',
+    questions: [{ id: 'q1', question: '?' }, { id: 'q2', question: '?' }],
+  })
+  // Answer only the first, then let the timeout settle the rest.
+  registry.answer(entry.id, 'q1', { selected: ['A'] })
+  const settled = await entry.answered
+
+  // DSH rejects a batch that does not name every question, so the skipped one
+  // must still appear — as selected: [].
+  assert.equal(settled.answers.length, 2)
+  assert.deepEqual(settled.answers[1], { id: 'q2', selected: [] })
+})
+
+test('answering an unknown or finished request is a no-op', async () => {
+  const { QuestionRegistry } = await import('../src/bridge/question-registry.js')
+  const registry = new QuestionRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+  assert.equal(registry.answer('nope', 'q1', { selected: ['x'] }).ok, false)
+
+  const entry = registry.create({ channelId: 'c1', questions: [{ id: 'q1', question: '?' }] })
+  registry.answer(entry.id, 'q1', { selected: ['A'] })
+  // Already settled: a second click must not decide again.
+  assert.equal(registry.answer(entry.id, 'q1', { selected: ['B'] }).ok, false)
+})
+
+test('question registry clear settles everything on shutdown', async () => {
+  const { QuestionRegistry } = await import('../src/bridge/question-registry.js')
+  const registry = new QuestionRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+  const a = registry.create({ channelId: 'c', questions: [{ id: 'q', question: '?' }] })
+  registry.clear('timeout')
+  const settled = await a.answered
+  assert.equal(settled.answers.length, 1)
+  assert.deepEqual(settled.answers[0], { id: 'q', selected: [] })
+})
+
+test('question card renders a dropdown and a skip button', async () => {
+  const { questionCard, QUESTION_SELECT_PREFIX, QUESTION_SKIP_PREFIX } =
+    await import('../src/discord/cards-v2.js')
+  const payload = questionCard({
+    requestId: 'r1',
+    index: 0,
+    total: 2,
+    question: {
+      id: 'q1',
+      header: '选择方案',
+      question: '用哪种重构方式？',
+      options: [{ label: '保守', description: '只改必要部分' }, { label: '激进' }],
+    },
+    expiresAt: Date.now() + 60000,
+  })
+  assert.equal(payload.flags, 1 << 15)
+  const json = JSON.stringify(payload)
+  assert.ok(json.includes(`${QUESTION_SELECT_PREFIX}r1:0`), 'select carries request id and index')
+  assert.ok(json.includes(`${QUESTION_SKIP_PREFIX}r1:0`), 'skip button carries the same key')
+  assert.ok(json.includes('"type":3'), 'a string select is present')
+  assert.match(json, /保守/)
+  assert.match(json, /第 1\/2 个问题/)
+})
+
+test('an answered question card drops the controls', async () => {
+  const { answeredQuestionCard } = await import('../src/discord/cards-v2.js')
+  const chosen = answeredQuestionCard({ question: { question: '?' }, selected: ['保守', '激进'] })
+  const chosenJson = JSON.stringify(chosen)
+  assert.ok(!chosenJson.includes('"type":3'), 'no dropdown remains')
+  assert.ok(!chosenJson.includes('dsh:q:skip'), 'no skip button remains')
+  assert.match(chosenJson, /已选：保守、激进/)
+
+  const skipped = JSON.stringify(answeredQuestionCard({ question: { question: '?' }, skipped: true }))
+  assert.match(skipped, /已跳过/)
+})
