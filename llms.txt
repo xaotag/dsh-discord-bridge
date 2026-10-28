@@ -1,0 +1,100 @@
+# dsh-discord-bridge — LLM / Agent 指引
+
+本文件面向 LLM 与自动化代理。人类可读版见 [AGENTS.md](AGENTS.md) 与 [README.zh-CN.md](README.zh-CN.md)。
+
+## 仓库是什么
+
+Discord Bot ⇄ DeepSeek Harness（DSH）宿主内桥接插件。Cordis/DSH 插件，运行在 DSH 进程内。
+Discord 侧用 `discord.js` v14；DSH 侧用 `ctx.agents.*`、`agent/*`、`session/*` 公共接口。
+
+## 必读约束
+
+**1. 分支必须遵循 `v<版本>` / `v<版本>-<主题>` 前缀+后缀格式。**
+`main` 只接收版本分支，不得直接提交。禁止新建 `feat/`、`fix/` 前缀分支。
+功能分支从版本分支切出，完成后 `--no-ff` 回合，合并后重跑测试。
+
+**2. 改完必须真正加载入口验证，不能只看单测。**
+
+```bash
+npm test
+node -e "await import('./index.js')"
+```
+
+单测全绿但插件加载失败在本仓库发生过两次（具名导出缺失、作用域越界）。第二条命令是必须的。
+
+**3. 审计日志只记操作元数据，绝不记对话内容。**
+可记：长度、耗时、工具名、退出码、状态。不可记：正文、prompt、模型输出、参数值。
+
+## 代码地图
+
+```
+index.js                    组合根：生命周期、鉴权、路由
+src/config.js               env/config 解析、鉴权
+src/state-store.js          Channel → Session 持久化、事件去重
+src/audit/db.js             SQLite 操作审计（node:sqlite，WAL）
+src/discord/
+  transport.js              discord.js 封装、限流、审计
+  renderer.js               embed 渲染（旧，仍用于部分场景）
+  cards-v2.js               Components V2 卡片（当前主用）
+  components-v2.js          V2 原语：Text Display / Separator / Container
+  markdown.js               Markdown → Discord 适配（表格、宽度）
+  commands.js               斜杠命令定义与解析
+src/bridge/
+  agent-service.js          DSH Agent / Session 封装
+  stream-reporter.js        流式呈现（工具行内、节流编辑）
+  approval.js               审批注册表（一次性、带 TTL）
+  privilege-outcome.js      权限结果三态判定
+  privileged-client.js      提权请求提交与结果读取
+  privileged-protocol.js    HMAC 签名的请求协议
+privd/                      root 守护进程 + 安装脚本
+```
+
+## 依赖方向（不得违反）
+
+- `src/discord/*` 不得引用 DSH
+- `src/bridge/*` 不得引用 discord.js
+- `index.js` 只管编排，业务逻辑下沉到 `src/`
+
+## Discord 渲染限制
+
+Discord **不是** Markdown 渲染器，只支持子集。官方文档（`.md` 更好读）：
+
+- `https://docs.discord.com/developers/reference.md` — 消息格式化
+- `https://docs.discord.com/developers/components/reference.md` — 组件（含 Components V2）
+- `https://docs.discord.com/llms.txt` — 完整索引
+
+关键事实：
+
+| 能力 | embed description | Text Display（V2 组件 10） |
+|---|---|---|
+| `#` 标题 | ❌ 不渲染 | ✅ 完整 Markdown |
+| 嵌套列表 | ❌ 塌陷 | ✅ |
+| 表格 | ❌ 无 | ❌ **任何** Discord 界面都无表格语法 |
+
+表格只能模拟。当前实现：代码块内按记录分行（见 `src/discord/markdown.js` 的 `renderRecordTable`）。
+**不要**再用空格补列对齐——Discord 手机端等宽字体里 CJK 字符不等于 2 个 ASCII 格，必然错位。
+
+Components V2 注意：`flags` 用 `1 << 15`（32768）；一旦发出，消息无法回到 content/embeds；
+`content`/`embeds`/`poll`/`stickers` 失效；组件总数上限 40；`ephemeral` 用 `flags | (1 << 6)` 而非字段。
+
+## 提权边界
+
+DSH 的 bash 工具运行在 `no_new_privs` 沙箱内，进程内**无法**提权——
+`sudo` 会被内核在读取密码前拒绝，`SUDO_ASKPASS`、`NOPASSWD` 均无效。
+
+提权通过 `privd/`（root systemd 服务）完成：DSH 写签名请求 → 守护进程验签执行 → 写回结果。
+改动时必须保持：HMAC 验签、一次性 ID、TTL、原子认领、逐条审计。
+
+## 提交格式
+
+`<type>(<scope>): <subject>`，type ∈ `feat|fix|refactor|docs|test|chore`，
+scope 用模块名。破坏性变更加 `!` 并写 `BREAKING CHANGE:`。
+
+## 验证门槛
+
+```bash
+npm test                                # 必须全绿（当前 72 项）
+node -e "await import('./index.js')"    # 入口必须能加载
+```
+
+改行为时同步更新测试，不要留断言旧行为的用例。
