@@ -26,6 +26,7 @@ export const COMPONENT_TYPE = {
   TEXT_DISPLAY: 10,
   SEPARATOR: 14,
   CONTAINER: 17,
+  LABEL: 18,
 }
 
 /** Text input styles: a single line, or a multi-line paragraph. */
@@ -110,27 +111,49 @@ export function stringSelect({ customId, options = [], placeholder, multi = fals
   return node
 }
 
-/** A single text field, only valid inside a modal. */
+/**
+ * A single text field.
+ *
+ * The bare input carries no visible title: Discord deprecated the `label` field
+ * on Text Input in favour of the Label component, so a field must be wrapped in
+ * `label()` to show what it is asking for.
+ */
 export function textInput({
   customId,
-  label,
   style = TEXT_INPUT_STYLE.PARAGRAPH,
   placeholder,
   value,
   required = false,
+  minLength,
   maxLength = 1000,
 } = {}) {
   const input = {
     type: COMPONENT_TYPE.TEXT_INPUT,
     custom_id: String(customId),
     style,
-    label: String(label ?? '').slice(0, MODAL_TITLE_LIMIT),
     required: Boolean(required),
     max_length: Math.max(1, Math.min(Number(maxLength) || 1000, 4000)),
   }
+  if (Number.isFinite(minLength)) input.min_length = Math.max(0, Math.min(Number(minLength), 4000))
   if (placeholder) input.placeholder = String(placeholder).slice(0, 100)
   if (value) input.value = String(value).slice(0, 4000)
   return input
+}
+
+/**
+ * A labelled field for a modal.
+ *
+ * Every modal input must sit inside one of these: the label lives on this
+ * component, not on the input itself.
+ */
+export function label({ text, description, component } = {}) {
+  const node = {
+    type: COMPONENT_TYPE.LABEL,
+    label: String(text ?? '').slice(0, MODAL_TITLE_LIMIT),
+    component,
+  }
+  if (description) node.description = String(description).slice(0, 100)
+  return node
 }
 
 /**

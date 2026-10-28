@@ -1172,11 +1172,16 @@ test('the custom modal carries a text input keyed to the question', async () => 
   })
   assert.equal(m.custom_id, `${QUESTION_MODAL_PREFIX}r1:2`)
   assert.equal(m.components.length, 1)
-  const input = m.components[0]
+  // Every modal input must be wrapped in a Label: Discord deprecated the Text
+  // Input's own `label` field, so a bare input renders with no question text.
+  const field = m.components[0]
+  assert.equal(field.type, 18, 'a Label wraps the input')
+  assert.equal(field.label, '选择方案')
+  const input = field.component
   assert.equal(input.type, 4, 'a text input, the only modal input type')
   assert.equal(input.custom_id, 'answer')
   assert.equal(input.style, 2, 'paragraph style for free text')
-  assert.ok(input.title === undefined, 'modals use a title, not a field label')
+  assert.equal(input.label, undefined, 'the deprecated label field is not used')
   assert.ok(m.title.length <= 45, 'Discord caps modal titles at 45 chars')
 })
 

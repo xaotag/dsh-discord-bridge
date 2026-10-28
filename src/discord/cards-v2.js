@@ -17,6 +17,7 @@ import {
   button,
   container,
   countComponents,
+  label,
   modal,
   separator,
   stringSelect,
@@ -412,14 +413,18 @@ export function questionCustomModal({
   return modal({
     customId: `${modalPrefix}${requestId}:${index}`,
     title: fieldLabel || '自定义回答',
+    // The input must sit inside a Label: Discord deprecated the Text Input's own
+    // `label` field, so a bare input would render without its question.
     components: [
-      textInput({
-        customId: 'answer',
-        label: fieldLabel || '自定义回答',
-        style: TEXT_INPUT_STYLE.PARAGRAPH,
-        placeholder: '输入你的回答…',
-        maxLength: 1000,
-        required: false,
+      label({
+        text: fieldLabel || '自定义回答',
+        component: textInput({
+          customId: 'answer',
+          style: TEXT_INPUT_STYLE.PARAGRAPH,
+          placeholder: '输入你的回答…',
+          maxLength: 1000,
+          required: false,
+        }),
       }),
     ],
   })
