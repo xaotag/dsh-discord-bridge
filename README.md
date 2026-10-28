@@ -152,10 +152,18 @@ list card — one line per call, `⟳` while running and `✓` once finished —
 with many calls stays readable instead of stacking near-identical embeds. The answer
 card is edited in place, so history is not lost on long tasks.
 
-Each line carries the tool name plus its **description only**: when the caller supplies
-an intent field (`description`, `summary`, `label`, `title`, `reason`, `purpose`) it is
-shown after the name; otherwise the line is just the tool name. Argument values —
-commands, paths, URLs, patterns, prompts — are never rendered.
+Tool calls are **interleaved into the body at the point they occurred** (each call
+records the `textOffset` it started at), so the card reads as prose → call → the prose
+that followed, rather than a block of calls pinned to the top. Calls are separated by a
+blank line. The description is chosen in this order:
+
+1. an intent field the caller supplied (`description`, `summary`, `label`, `title`,
+   `reason`, `purpose`)
+2. for file tools (`read`/`write`/`edit`) the **file being operated on**; for `glob`
+   the match pattern
+
+Other tools show the bare name. Argument values — commands, URLs, prompts — are never
+rendered, and long paths are shortened to `…/src/file.js`.
 
 ### Markdown adaptation (Components V2)
 

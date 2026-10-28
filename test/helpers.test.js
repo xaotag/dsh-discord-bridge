@@ -874,26 +874,57 @@ test('tool list code block survives the markdown adapter untouched', async () =>
   assert.equal(adaptMarkdownForTextDisplay(src), src)
 })
 
-test('inlineToolLines renders subtext lines, not a code block or bullets', async () => {
+test('inlineToolLines renders subtext lines separated by a blank line', async () => {
   const { inlineToolLines } = await import('../src/discord/cards-v2.js')
   const now = Date.now()
   const out = inlineToolLines([
     { name: 'bash', args: '{"description":"检查状态"}', endedAt: now },
-    { name: 'edit', args: '{"file_path":"/secret"}', endedAt: now },
+    { name: 'edit', args: '{"file_path":"/a/b/renderer.js"}', endedAt: now },
     { name: 'fetch', args: '{"url":"https://x"}' },
   ])
-  const lines = out.split('\n')
+  // `-#` lines render flush against each other, so separation is a paragraph
+  // break rather than an extra space.
+  const lines = out.split('\n').filter((l) => l.trim())
   assert.equal(lines.length, 3)
+  assert.ok(out.includes('\n\n'), 'calls are separated by a blank line')
   for (const line of lines) {
     assert.ok(line.startsWith('-# '), 'every line uses Discord subtext syntax')
     assert.ok(!line.startsWith('- '), 'not a markdown bullet')
   }
   assert.match(lines[0], /✓ `bash` · 检查状态/)
   assert.match(lines[2], /⟳ `fetch`/, 'running call keeps the running glyph')
-  // Argument values never leak, only the caller-supplied description.
-  assert.ok(!out.includes('/secret'))
+  // A URL argument is still never rendered.
   assert.ok(!out.includes('https://x'))
   assert.ok(!out.includes('```'), 'no code fence for inline display')
+})
+
+test('file tools show the file they operate on', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const now = Date.now()
+  const line = (name, args) =>
+    inlineToolLines([{ name, args, endedAt: now }]).replace(/^-# ✓ `/m, '').split('` · ')[1]?.trim()
+
+  assert.equal(line('read', '{"file_path":"/a/b/c.js"}'), '/a/b/c.js')
+  assert.equal(line('edit', '{"file_path":"/a/b/c.js"}'), '/a/b/c.js')
+  assert.equal(line('write', '{"file_path":"/a/b/c.js"}'), '/a/b/c.js')
+  assert.equal(line('glob', '{"pattern":"src/**/*.js"}'), 'src/**/*.js')
+
+  // A search term is not a target, so grep stays bare.
+  assert.equal(line('grep', '{"pattern":"TODO"}'), undefined)
+  // Neither does an unrelated argument leak in.
+  assert.equal(line('bash', '{"command":"ls -la"}'), undefined)
+
+  // An explicit description always wins over the path.
+  assert.equal(line('read', '{"file_path":"/a/b.js","description":"查看配置"}'), '查看配置')
+})
+
+test('a long file path is shortened rather than flooding the line', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const deep = '/home/user/projects/app/src/deeply/nested/directory/structure/file.js'
+  const out = inlineToolLines([{ name: 'read', args: JSON.stringify({ file_path: deep }), endedAt: Date.now() }])
+  assert.ok(!out.includes(deep), 'full path is not printed')
+  assert.match(out, /file\.js/, 'the file name survives')
+  assert.ok(out.length < 120, 'line stays short')
 })
 
 test('inlineToolLines elides the oldest entries past the line cap', async () => {
@@ -971,4 +1002,48 @@ test('a plain permission error keeps its message', async () => {
     summarizeDenial({ stderr: 'cat: /etc/shadow: Permission denied' }),
     /Permission denied/,
   )
+})
+
+test('tools are interleaved into the prose at the point they occurred', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  const first = '先分析项目结构。'
+  const second = `${first}\n\n发现问题：配置有 bug。`
+  const full = `${second}\n\n已修复。`
+  const tools = [
+    { name: 'bash', args: '{"command":"ls"}', endedAt: Date.now(), textOffset: first.length },
+    { name: 'read', args: '{"file_path":"/a/config.js"}', endedAt: Date.now(), textOffset: second.length },
+  ]
+  const out = interleaveTools(full, tools)
+
+  // Order must be: prose → tool → prose → tool → prose.
+  const order = out
+    .split('\n\n')
+    .map((part) => (/^-#/.test(part) ? 'T' : 'P'))
+    .join('')
+  assert.equal(order, 'PTPTP', 'prose and tool lines alternate in occurrence order')
+
+  assert.match(out, /先分析项目结构/)
+  assert.match(out, /✓ `bash`/)
+  assert.match(out, /发现问题/)
+  assert.match(out, /✓ `read` · \/a\/config\.js/)
+  assert.match(out, /已修复/)
+})
+
+test('tools without an offset still render before the body', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  const out = interleaveTools('正文内容', [{ name: 'bash', args: '{}', endedAt: Date.now() }])
+  assert.ok(out.startsWith('-#'), 'unanchored calls lead the body')
+  assert.match(out, /正文内容/)
+})
+
+test('interleaveTools is a no-op when there are no tools', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  assert.equal(interleaveTools('  只有正文  ', []), '只有正文')
+})
+
+test('an offset beyond the text length does not drop content', async () => {
+  const { interleaveTools } = await import('../src/discord/cards-v2.js')
+  const out = interleaveTools('短正文', [{ name: 'bash', args: '{}', endedAt: Date.now(), textOffset: 999 }])
+  assert.match(out, /短正文/)
+  assert.match(out, /✓ `bash`/)
 })
