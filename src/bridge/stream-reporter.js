@@ -1,14 +1,10 @@
+import { STOP_BUTTON_PREFIX, formatDuration, progressCaption } from '../discord/renderer.js'
 import {
-  MAX_CARD_EMBEDS,
-  STOP_BUTTON_PREFIX,
-  answerPayload,
-  finalPayloads,
-  formatDuration,
-  placeholderPayload,
-  progressCaption,
-  toolCardsPayload,
-  withStopButton,
-} from '../discord/renderer.js'
+  finalCard,
+  placeholderCard,
+  streamCard,
+  withStopRow,
+} from '../discord/cards-v2.js'
 
 /** Show the "已等待 …" caption only after this much silence. */
 const QUIET_CAPTION_THRESHOLD_MS = 8000
@@ -20,12 +16,10 @@ const LENGTH_BACKOFF_MAX_MULTIPLIER = 3
 /**
  * Presentation-only streaming reporter.
  *
- * One turn owns up to two kinds of messages:
- * - toolMessageId: the tool-run message. One embed per call, appended and
- *   edited in place; nothing is removed when a call finishes, so the transcript
- *   keeps every tool call as its own card.
- * - messageId: the answer card, streamed and finally recoloured to the turn
- *   status. Long answers spill into follow-up messages.
+ * One turn owns exactly one message: the answer card (messageId). Tool calls
+ * render **inline** at the top of that card as subtext lines, so a turn never
+ * spawns a second message for its tool run. The card is edited in place and
+ * finally recoloured to the turn status.
  *
  * It has no DSH or discord.js imports; transport is injected.
  */
@@ -47,7 +41,6 @@ export class StreamReporter {
     this.logger = logger
     this.showReasoning = showReasoning
     this.messageId = existingMessageId
-    this.toolMessageId = undefined
     this.model = model
     this.reasoningEffort = reasoningEffort
     this.startedAt = startedAt || Date.now()
@@ -76,7 +69,7 @@ export class StreamReporter {
 
   async begin() {
     if (this.messageId) return
-    const sent = await this.transport.send(this.channelId, placeholderPayload())
+    const sent = await this.transport.send(this.channelId, placeholderCard())
     this.messageId = sent.messageId
     this.stopButtonId = `${STOP_BUTTON_PREFIX}${sent.messageId}`
     // Only the very first placeholder needs a second edit to gain the button;
@@ -162,14 +155,18 @@ export class StreamReporter {
   }
 
   buildAnswerPayload() {
-    const payload = answerPayload(this.text, {
+    const payload = streamCard(this.text, {
       startedAt: this.startedAt,
       model: this.model,
       reasoningEffort: this.reasoningEffort,
       caption: this.caption(),
+      title: '⏳ 正在生成…',
+      tools: this.tools,
     })
     // The stop button only makes sense while the turn is still running.
-    if (!this.closed && this.stopButtonId) return withStopButton(payload, this.messageId)
+    if (!this.closed && this.stopButtonId) {
+      return withStopRow(payload, this.messageId, { prefix: STOP_BUTTON_PREFIX })
+    }
     return payload
   }
 
@@ -232,26 +229,16 @@ export class StreamReporter {
     await this.flushTools()
   }
 
-  /** Create-or-update the tool-run message. Never deletes a call. */
+  /**
+   * Re-render the answer card so newly started/finished tool calls appear
+   * inline. No separate message is created, so a turn stays one card.
+   */
   async flushTools() {
-    if (!this.tools.length) return
-    const payload = toolCardsPayload(this.tools)
-    const target = { ...payload, embeds: payload.embeds.slice(-MAX_CARD_EMBEDS) }
-    if (this.toolMessageId) {
-      const messageId = this.toolMessageId
-      this.toolFlushing = this.toolFlushing
-        .catch(() => undefined)
-        .then(() => this.transport.edit(this.channelId, messageId, target))
-      await this.toolFlushing
-      return
-    }
+    if (!this.tools.length || !this.messageId) return
+    const messageId = this.messageId
     this.toolFlushing = this.toolFlushing
       .catch(() => undefined)
-      .then(async () => {
-        if (this.toolMessageId) return
-        const sent = await this.transport.send(this.channelId, target)
-        this.toolMessageId = sent.messageId
-      })
+      .then(() => this.transport.edit(this.channelId, messageId, this.buildAnswerPayload()))
     await this.toolFlushing
   }
 
@@ -266,20 +253,17 @@ export class StreamReporter {
     const finalText = text || this.text
     if (!this.messageId) return
     const elapsed = Date.now() - this.startedAt
-    const payloads = finalPayloads(finalText, status, {
+    // A single card holds the answer; textChunks inside cardPayload already
+    // splits the body across Text Displays, so no follow-up messages are needed
+    // unless the answer exceeds the per-message component budget.
+    const payload = finalCard(finalText, status, {
       startedAt: this.startedAt,
       model: this.model,
       reasoningEffort: this.reasoningEffort,
       caption: this.toolCount > 0 ? `共调用 ${this.toolCount} 次工具，用时 ${formatDuration(elapsed)}` : undefined,
+      tools: this.tools,
     })
-    const [first, ...rest] = payloads
-    await this.transport.edit(this.channelId, this.messageId, first)
-    // Long answers spill into follow-up messages; the answer card stays the
-    // anchor so a later edit/cleanup can still find this turn.
-    for (const payload of rest) {
-      const sent = await this.transport.send(this.channelId, payload)
-      this.extraMessageIds = [...(this.extraMessageIds || []), sent.messageId]
-    }
+    await this.transport.edit(this.channelId, this.messageId, payload)
   }
 
   async fail(error) {
@@ -291,11 +275,11 @@ export class StreamReporter {
     await this.flushing.catch(() => undefined)
     await this.toolFlushing.catch(() => undefined)
     const message = error instanceof Error ? error.message : String(error)
-    const payload = finalPayloads(message, 'failed', {
+    const payload = finalCard(message, 'failed', {
       startedAt: this.startedAt,
       model: this.model,
       reasoningEffort: this.reasoningEffort,
-    })[0]
+    })
     if (this.messageId) {
       await this.transport.edit(this.channelId, this.messageId, payload).catch(() => undefined)
     }

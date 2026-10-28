@@ -140,7 +140,7 @@ All conversational messages are rendered as **Discord Embed cards** instead of p
 | Card | Title | Color | Content |
 |---|---|---|---|
 | Placeholder / answer (streaming) | `⏳ Generating…` | Blue `#5865F2` | Aggregating assistant text |
-| Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call: `✓ \`bash\` · description` |
+| Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call inside a code block: `✓ bash  description` |
 | Done | `✅ Completed` | Green `#57F287` | Final assistant text |
 | Stopped | `⏹️ Stopped` | Grey `#99AAB5` | Partial generated text |
 | Failed | `❌ Failed` | Red `#ED4245` | Redacted error message |
@@ -157,19 +157,17 @@ an intent field (`description`, `summary`, `label`, `title`, `reason`, `purpose`
 shown after the name; otherwise the line is just the tool name. Argument values —
 commands, paths, URLs, patterns, prompts — are never rendered.
 
-### Markdown adaptation
+### Markdown adaptation (Components V2)
 
-Discord is **not** a Markdown renderer: it supports a subset, and embed
-descriptions support less than plain message content. Everything written into an
-embed is adapted first:
+Every card renders through a **Text Display** component, which supports the
+**full Markdown rules**. Headings, nested lists and code blocks therefore appear
+exactly as written; only syntax Discord lacks at all is converted:
 
 | Source | Becomes | Why |
 |---|---|---|
-| `# Heading` | `**Heading**` | Embeds do not render ATX headings; the `#` shows literally |
-| 2-column table | `-# header` + `- **key**: value` | Discord has no table syntax; a list wraps naturally |
-| 3+ column table | fenced code block | Column alignment needs monospace; padded by **display width** |
-| `- [ ]` / `- [x]` | `☐` / `☑` | Checkbox glyphs |
-| Deep list nesting | flattened to two levels | Nested indentation collapses in embeds |
+| `# Heading` | **kept verbatim** | Text Display renders ATX headings |
+| Lists / nesting | **kept verbatim** | Text Display supports nested indentation |
+| Tables | one record per block inside a fence | **No** Discord surface has table syntax; padding columns drifts with CJK |
 | Code block content | untouched | Never rewritten |
 
 The important detail: column widths come from `displayWidth()`, which counts CJK

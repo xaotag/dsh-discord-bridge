@@ -31,13 +31,15 @@ import {
   APPROVE_BUTTON_PREFIX,
   REJECT_BUTTON_PREFIX,
   STOP_BUTTON_PREFIX,
-  approvalPayload,
-  chunkDiscordText,
-  decidedApprovalPayload,
-  finalEmbed,
-  notificationPayload,
-  placeholderPayload,
 } from './src/discord/renderer.js'
+import {
+  approvalCard,
+  decidedApprovalCard,
+  finalCard,
+  noticeCard,
+  placeholderCard,
+} from './src/discord/cards-v2.js'
+import { textChunks } from './src/discord/components-v2.js'
 import { readTextAttachments } from './src/discord/attachments.js'
 import { mentionsUser, stripMentions } from './src/discord/mention.js'
 import { AgentService, extractSessionId } from './src/bridge/agent-service.js'
@@ -46,6 +48,11 @@ import { DeepSeekApiClient } from './src/deepseek/api-client.js'
 import { ThreadManager, shouldCreateThread } from './src/bridge/thread-manager.js'
 import { ApprovalRegistry } from './src/bridge/approval.js'
 import { PrivilegedClient } from './src/bridge/privileged-client.js'
+import {
+  classifyPrivilegedOutcome,
+  describePrivilegedOutcome,
+  selinuxHint,
+} from './src/bridge/privilege-outcome.js'
 import { AuditLog } from './src/audit/db.js'
 import { UNTRUSTED_INPUT_POLICY } from './src/bridge/untrusted.js'
 
@@ -137,7 +144,7 @@ export function apply(ctx, rawConfig = {}) {
         .editInteraction(target, text)
         .catch(() => transport.replyInteraction(target, text, ephemeral))
     }
-    return transport.send(target, notificationPayload(text), { replyToMessageId })
+    return transport.send(target, noticeCard(text), { replyToMessageId })
   }
 
   // ------------------------------------------------------------------ tasks
@@ -171,10 +178,10 @@ export function apply(ctx, rawConfig = {}) {
         await transport.edit(
           channelId,
           placeholder.messageId,
-          notificationPayload(`🧵 子任务已转到子线程：<#${thread.channelId}>`),
+          noticeCard(`🧵 子任务已转到子线程：<#${thread.channelId}>`),
         )
       } else {
-        await transport.send(channelId, notificationPayload(`🧵 子任务已转到子线程：<#${thread.channelId}>`), {
+        await transport.send(channelId, noticeCard(`🧵 子任务已转到子线程：<#${thread.channelId}>`), {
           replyToMessageId,
         })
       }
@@ -511,17 +518,24 @@ export function apply(ctx, rawConfig = {}) {
           ...(result.status !== 'ok' ? { error: result.message || result.stderr } : {}),
         })
 
+        // Distinguish "approved and ran" from "approved but the system refused
+        // it" (SELinux, AppArmor, DAC, polkit) so the reply never blames the
+        // command for a policy denial.
+        const outcome = classifyPrivilegedOutcome(result)
         const lines = []
-        if (result.status === 'ok') {
-          lines.push(`✅ 执行完成（退出码 ${result.exitCode ?? 0}，用时 ${elapsed}ms）`)
+        if (outcome === 'approved') {
+          lines.push(`✅ 已批准并执行（退出码 ${result.exitCode ?? 0}，用时 ${elapsed}ms）`)
+        } else if (outcome === 'denied') {
+          lines.push('⛔ 已批准，但无权限执行')
         } else if (result.status === 'timeout') {
           lines.push('⏱ 等待执行结果超时。')
-        } else if (result.status === 'denied') {
-          lines.push('🚫 守护进程拒绝了该请求。')
         } else {
-          lines.push(`❌ 执行失败${result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : ''}`)
+          lines.push('❌ 执行失败')
         }
-        if (result.message) lines.push(result.message)
+        const detail = describePrivilegedOutcome(result)
+        if (detail && outcome !== 'approved') lines.push(detail)
+        const hint = selinuxHint(result)
+        if (hint) lines.push('', hint)
         if (result.stdout?.trim()) {
           lines.push('', '**stdout**', '```', clipForDiscord(result.stdout), '```')
         }
@@ -601,7 +615,7 @@ export function apply(ctx, rawConfig = {}) {
       // message (without another mention) continues the same conversation.
       pendingMentions.set(key, { userId: message.author.id, at: Date.now() })
       await transport
-        .send(channelId, notificationPayload(greeting(message.author.username)), {
+        .send(channelId, noticeCard(greeting(message.author.username)), {
           replyToMessageId: message.id,
         })
         .catch((error) => logger.warn('发送 greeting 失败:', error?.message || String(error)))
@@ -627,7 +641,7 @@ export function apply(ctx, rawConfig = {}) {
       if (deepseekCommand) {
         await transport.send(
           channelId,
-          notificationPayload(
+          noticeCard(
             'DeepSeek 原生 API 请使用 Slash Command：`/deepseek models list`、`/deepseek chat create` 等。',
           ),
           { replyToMessageId: message.id },
@@ -646,7 +660,7 @@ export function apply(ctx, rawConfig = {}) {
         })
         return
       }
-      const placeholder = await transport.send(channelId, placeholderPayload(), {
+      const placeholder = await transport.send(channelId, placeholderCard(), {
         replyToMessageId: message.id,
       })
       await runPrompt({
@@ -672,7 +686,7 @@ export function apply(ctx, rawConfig = {}) {
         error: error?.message || String(error),
       })
       await transport
-        .send(channelId, notificationPayload(`❌ 执行失败：${safeError(error)}`), {
+        .send(channelId, noticeCard(`❌ 执行失败：${safeError(error)}`), {
           replyToMessageId: message.id,
         })
         .catch(() => undefined)
@@ -846,7 +860,7 @@ export function apply(ctx, rawConfig = {}) {
           maxTokens: options.maxTokens,
         })
         const text = data?.choices?.[0]?.text || '(无文本输出)'
-        const chunks = chunkDiscordText(text)
+        const chunks = textChunks(text)
         await transport.editInteraction(interaction, chunks[0] || '(无文本输出)')
         for (const chunk of chunks.slice(1)) await transport.followUpInteraction(interaction, chunk, false)
         return
@@ -903,7 +917,7 @@ export function apply(ctx, rawConfig = {}) {
     try {
       const messageId = interaction.message?.id
       if (messageId) {
-        await transport.edit(channelId, messageId, decidedApprovalPayload(decision))
+        await transport.edit(channelId, messageId, decidedApprovalCard(decision))
       }
     } catch (error) {
       logger.warn('更新确认卡片失败:', error?.message || String(error))
@@ -950,9 +964,7 @@ export function apply(ctx, rawConfig = {}) {
       })
       if (stopped) {
         await transport
-          .editComponentReply(interaction, {
-            embeds: finalEmbed('已按你的请求停止当前任务。', 'cancelled'),
-          })
+          .editComponentReply(interaction, finalCard('已按你的请求停止当前任务。', 'cancelled'))
           .catch((error) =>
             logger.warn('按钮停止后更新卡片失败:', error?.message || String(error)),
           )
@@ -1171,12 +1183,14 @@ export function apply(ctx, rawConfig = {}) {
     if (!channelId) return 'timeout'
     const request = approvals.create({ channelId, userId, description })
     try {
-      const payload = approvalPayload({
+      const payload = approvalCard({
         requestId: request.id,
         title,
         description,
         footer,
         expiresAt: request.expiresAt,
+        approvePrefix: APPROVE_BUTTON_PREFIX,
+        rejectPrefix: REJECT_BUTTON_PREFIX,
       })
       const sent = await transport.send(channelId, payload)
       audit.record({

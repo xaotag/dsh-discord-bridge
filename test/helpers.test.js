@@ -192,7 +192,7 @@ function fakeTransport() {
   }
 }
 
-test('reporter streams the answer card and finishes into a coloured status card', async () => {
+test('reporter streams the answer card and finishes into a status card', async () => {
   const transport = fakeTransport()
   const reporter = new StreamReporter({
     transport,
@@ -204,30 +204,59 @@ test('reporter streams the answer card and finishes into a coloured status card'
   await reporter.begin()
   reporter.onTextDelta('hello')
   await reporter.flush(true)
-  assert.equal(transport.calls.edits.at(-1).payload.embeds[0].description, 'hello')
-  assert.match(transport.calls.edits.at(-1).payload.embeds[0].footer.text, /耗时 2\.0s/)
+
+  const streaming = transport.calls.edits.at(-1).payload
+  assert.equal(streaming.flags, 1 << 15, 'cards are sent as Components V2')
+  const streamingTexts = flattenTexts(streaming.components)
+  assert.ok(streamingTexts.includes('hello'), 'body is a Text Display')
+  assert.ok(streamingTexts.some((t) => /耗时 2\.0s/.test(t)), 'footer carries the elapsed time')
   // While running, the answer card carries the live stop button.
-  assert.equal(
-    transport.calls.edits.at(-1).payload.components[0].components[0].custom_id,
-    'dsh:stop:m1',
-  )
+  const stopId = findCustomId(streaming.components, 'dsh:stop:m1')
+  assert.ok(stopId, 'stop button is present while streaming')
 
   await reporter.finish('hello world', 'completed')
   const last = transport.calls.edits.at(-1)
   assert.equal(last.messageId, 'm1', 'final edit reuses the streaming message')
-  assert.equal(last.payload.embeds[0].title, '✅ 已完成')
-  assert.equal(last.payload.embeds[0].color, EMBED_COLORS.completed)
-  assert.match(last.payload.embeds[0].description, /hello world/)
-  // The final card drops the button. An empty array (not an omitted field) is
-  // required, or Discord keeps the components of the edited message.
-  assert.deepEqual(last.payload.components, [])
+  const finals = flattenTexts(last.payload.components)
+  assert.ok(finals.some((t) => /✅ 已完成/.test(t)), 'final card shows the completed title')
+  assert.ok(finals.some((t) => /hello world/.test(t)), 'final card carries the answer')
+  // The finished card must not carry the stop button any more.
+  assert.equal(findCustomId(last.payload.components, 'dsh:stop:m1'), undefined)
 })
 
-test('tool calls render as one list card, one line per call', async () => {
+/** Collect every Text Display string in a component tree. */
+function flattenTexts(nodes) {
+  const out = []
+  const walk = (list) => {
+    for (const node of list || []) {
+      if (!node) continue
+      if (node.type === 10) out.push(String(node.content ?? ''))
+      if (node.components) walk(node.components)
+    }
+  }
+  walk(nodes)
+  return out
+}
+
+/** Find a button custom_id anywhere in a component tree. */
+function findCustomId(nodes, wanted) {
+  const walk = (list) => {
+    for (const node of list || []) {
+      if (!node) continue
+      if (node.custom_id === wanted) return node.custom_id
+      const nested = walk(node.components)
+      if (nested) return nested
+    }
+    return undefined
+  }
+  return walk(nodes)
+}
+
+test('tool calls render inline in the answer card, never as a second message', async () => {
   const transport = fakeTransport()
   const reporter = new StreamReporter({ transport, channelId: 'c1', intervalMs: 0, logger: { warn() {} } })
   await reporter.begin()
-  reporter.onToolCall('bash', '{"command":"ls"}')
+  reporter.onToolCall('bash', '{"description":"检查状态"}')
   await new Promise((r) => setTimeout(r, 5))
   reporter.onToolResult()
   await new Promise((r) => setTimeout(r, 5))
@@ -236,38 +265,32 @@ test('tool calls render as one list card, one line per call', async () => {
   reporter.onToolResult()
   await new Promise((r) => setTimeout(r, 5))
 
-  // The tool run lives in its own message, not in the answer card.
-  assert.ok(reporter.toolMessageId)
-  assert.notEqual(reporter.toolMessageId, reporter.messageId)
   assert.equal(reporter.tools.length, 2, 'both calls are retained')
+  // A turn is a single message: tool calls share the answer card.
+  assert.equal(reporter.toolMessageId, undefined, 'no separate tool message exists')
+  assert.equal(transport.calls.sends.length, 1, 'only the placeholder was sent')
 
-  const toolEdit = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(toolEdit.payload.embeds.length, 1, 'the whole run is a single embed')
-  const embed = toolEdit.payload.embeds[0]
-  assert.equal(embed.title, '🛠 工具调用')
-  const lines = embed.description.split('\n')
-  assert.equal(lines.length, 2, 'one line per call')
-  assert.match(lines[0], /bash/)
-  assert.match(lines[1], /read/)
-  assert.match(embed.footer.text, /共 2 次/)
-
-  // A turn owns exactly ONE answer card however many tools it calls: earlier
-  // versions opened a new card per result and left one-word fragments behind.
-  const answerCardSends = transport.calls.sends.filter((p) => p.embeds?.[0]?.title === '⏳ 正在生成…')
-  assert.equal(answerCardSends.length, 0, 'tool results must not spawn extra answer cards')
-  assert.equal(transport.calls.sends.length, 2, 'only the placeholder and the tool message are sent')
-
-  // Text after the calls keeps flowing into the original answer card.
-  reporter.onTextDelta('after the tools')
+  reporter.onTextDelta('# 结果')
   await reporter.flush(true)
-  assert.equal(transport.calls.edits.at(-1).messageId, 'm1')
-  assert.equal(transport.calls.edits.at(-1).payload.embeds[0].description, 'after the tools')
+  const payload = transport.calls.edits.at(-1).payload
+  const texts = flattenTexts(payload.components)
+  const joined = texts.join('\n')
+
+  // Tool lines are subtext (`-#`) rendered above the answer body.
+  const toolLines = joined.split('\n').filter((l) => l.startsWith('-#') && /✓|⟳/.test(l))
+  assert.equal(toolLines.length, 2, 'one inline line per call')
+  assert.match(toolLines[0], /bash/)
+  assert.match(toolLines[1], /read/)
+  assert.ok(!joined.includes('🛠 工具调用'), 'there is no separate tool card title')
+
+  // Argument values are never rendered inline either.
+  assert.ok(!joined.includes('/a.js'), 'paths stay out of the card')
 
   await reporter.finish('done', 'completed')
-  const stillThere = transport.calls.edits.filter((e) => e.messageId === reporter.toolMessageId).at(-1)
-  assert.equal(stillThere.payload.embeds.length, 1, 'finishing never deletes the tool list')
-  assert.match(stillThere.payload.embeds[0].description, /bash/)
-  assert.match(stillThere.payload.embeds[0].description, /read/)
+  const finals = flattenTexts(transport.calls.edits.at(-1).payload.components).join('\n')
+  assert.match(finals, /bash/, 'the tool history survives into the final card')
+  assert.match(finals, /read/)
+  assert.match(finals, /✅ 已完成/)
 })
 
 test('reporter edit interval backs off for long cards and stays under 4.5s', () => {
@@ -390,13 +413,14 @@ test('markdown adapter leaves inline hashes and code fences alone', () => {
   assert.ok(out.includes('const a = 1'))
 })
 
-test('markdown adapter turns a narrow table into a list', () => {
-  // Discord has no table syntax; a two-column table reads better as a list,
-  // which wraps natively instead of relying on monospace alignment.
+test('markdown adapter turns a narrow table into a fenced record block', () => {
+  // No Discord surface has table syntax, so every table becomes records inside
+  // a fence; padding columns would drift once CJK glyphs are mixed in.
   const out = adaptMarkdownForEmbed('| a | b |\n|---|---|\n| 1 | 2 |')
-  assert.ok(!out.includes('```'), 'narrow tables skip the code fence')
-  assert.ok(out.includes('- **1**'))
-  assert.ok(out.includes('2'))
+  assert.ok(out.startsWith('```text'), 'the table is fenced')
+  assert.ok(out.includes('1'), 'the key survives')
+  assert.ok(out.includes('2'), 'the value survives')
+  assert.ok(!out.includes('|---|'), 'the separator row is gone')
 })
 
 test('markdown adapter keeps an unterminated fence verbatim while streaming', () => {
@@ -699,28 +723,22 @@ test('displayWidth counts CJK and emoji as two cells', async () => {
   assert.equal(displayWidth('a名b'), 4)
 })
 
-test('wide tables align columns by display width, not string length', async () => {
+test('tables are laid out as records, never space-padded columns', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
-  const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |', { asList: false })
-  const lines = out.split('\n')
-  // Every content line must have the same separator position.
-  const pipeIndexes = lines
-    .filter((l) => l.includes('│'))
-    .map((l) => displayIndex(l, '│'))
-  assert.equal(new Set(pipeIndexes).size, 1, 'first column separator must line up')
+  const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |')
+  // A record layout has no column separators to misalign.
+  assert.ok(!out.includes('│'), 'no pipeline column separators')
+  assert.ok(!out.includes('─┼─'), 'no drawn column rule')
+  assert.match(out, /中文\.js/, 'row title present')
+  assert.match(out, /状态：/, 'field label present')
 })
 
-function displayIndex(line, needle) {
-  const idx = line.indexOf(needle)
-  return idx === -1 ? -1 : idx
-}
-
-test('two-column tables become bullet lists for native wrapping', async () => {
+test('two-column tables also render as fenced records', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
   const out = convertTables('| 键 | 值 |\n|---|---|\n| a | 1 |')
-  assert.ok(!out.includes('```'), 'no code fence for a two-column table')
-  assert.match(out, /^-# 键 · 值/m)
-  assert.match(out, /- \*\*a\*\*：1/)
+  assert.ok(out.startsWith('```text'), 'still fenced')
+  assert.match(out, /^a$/m, 'key becomes the record title')
+  assert.match(out, /值：1/, 'value keeps its column label')
 })
 
 test('wide tables still use a fenced block', async () => {
@@ -728,4 +746,229 @@ test('wide tables still use a fenced block', async () => {
   const out = convertTables('| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |')
   assert.ok(out.startsWith('```text'))
   assert.ok(out.trimEnd().endsWith('```'))
+})
+
+test('components v2 payload sets the flag and drops content/embeds', async () => {
+  const { v2Payload, IS_COMPONENTS_V2, textDisplay } = await import('../src/discord/components-v2.js')
+  const payload = v2Payload([textDisplay('hi')])
+  assert.equal(payload.flags, IS_COMPONENTS_V2)
+  assert.equal(payload.flags, 32768)
+  assert.equal(payload.components.length, 1)
+  assert.equal(payload.content, undefined, 'Components V2 rejects content')
+  assert.equal(payload.embeds, undefined, 'Components V2 rejects embeds')
+})
+
+test('text display keeps markdown headings instead of downgrading them', async () => {
+  const { streamCard } = await import('../src/discord/cards-v2.js')
+  const payload = streamCard('# 项目分析\n\n## 概览\n正文', {})
+  const texts = flattenTexts(payload.components)
+  const joined = texts.join('\n')
+  // A Text Display renders full markdown, so the heading must survive verbatim.
+  assert.match(joined, /# 项目分析/)
+  assert.match(joined, /## 概览/)
+  assert.ok(!joined.includes('**项目分析**'), 'headings must not be flattened to bold')
+})
+
+test('cards use a container accent colour instead of embed colour', async () => {
+  const { finalCard, ACCENT } = await import('../src/discord/cards-v2.js')
+  const payload = finalCard('done', 'completed')
+  const root = payload.components[0]
+  assert.equal(root.type, 17, 'root is a container')
+  assert.equal(root.accent_color, ACCENT.completed)
+})
+
+test('separators divide body from footer', async () => {
+  const { streamCard } = await import('../src/discord/cards-v2.js')
+  const payload = streamCard('body', { model: 'm', startedAt: Date.now() - 1000 })
+  const kinds = payload.components[0].components.map((c) => c.type)
+  assert.ok(kinds.includes(14), 'a separator is emitted before the footer')
+})
+
+test('approval card nests buttons inside the container', async () => {
+  const { approvalCard } = await import('../src/discord/cards-v2.js')
+  const payload = approvalCard({
+    requestId: 'r1',
+    description: '删除文件',
+    approvePrefix: 'dsh:approve:',
+    rejectPrefix: 'dsh:reject:',
+  })
+  assert.equal(payload.flags, 1 << 15)
+  assert.equal(findCustomId(payload.components, 'dsh:approve:r1'), 'dsh:approve:r1')
+  assert.equal(findCustomId(payload.components, 'dsh:reject:r1'), 'dsh:reject:r1')
+})
+
+test('component budget is enforced before sending', async () => {
+  const { v2Payload, textDisplay, countComponents, MAX_TOTAL_COMPONENTS } =
+    await import('../src/discord/components-v2.js')
+  const { assertComponentBudget } = await import('../src/discord/cards-v2.js')
+  const payload = v2Payload([textDisplay('x')])
+  assert.equal(countComponents(payload.components), 1)
+  assert.doesNotThrow(() => assertComponentBudget(payload))
+  // Exceed the documented 40-component ceiling.
+  const huge = v2Payload(Array.from({ length: MAX_TOTAL_COMPONENTS + 1 }, () => textDisplay('x')))
+  assert.throws(() => assertComponentBudget(huge), /limit is 40/)
+})
+
+test('long bodies split across text displays without breaking surrogates', async () => {
+  const { textChunks, TEXT_DISPLAY_LIMIT } = await import('../src/discord/components-v2.js')
+  const body = 'x'.repeat(TEXT_DISPLAY_LIMIT + 500)
+  const chunks = textChunks(body)
+  assert.ok(chunks.length >= 2)
+  for (const chunk of chunks) assert.ok(chunk.length <= TEXT_DISPLAY_LIMIT)
+  assert.equal(chunks.join(''), body, 'no content lost when splitting')
+})
+
+test('every module resolves its named imports (catches missing exports)', async () => {
+  // `node --check` only validates syntax: a named import that the target module
+  // does not export still passes, and only blows up when the plugin loads.
+  // Importing each module here makes that failure show up in the test run.
+  const modules = [
+    '../src/discord/cards-v2.js',
+    '../src/discord/components-v2.js',
+    '../src/discord/markdown.js',
+    '../src/discord/renderer.js',
+    '../src/bridge/stream-reporter.js',
+    '../src/bridge/approval.js',
+    '../src/bridge/privileged-client.js',
+    '../src/bridge/privileged-protocol.js',
+  ]
+  for (const specifier of modules) {
+    await assert.doesNotReject(
+      () => import(specifier),
+      `${specifier} must import cleanly (missing named export?)`,
+    )
+  }
+})
+
+test('index.js loads, so the plugin entry has no unresolved imports', async () => {
+  const mod = await import('../index.js')
+  assert.equal(mod.name, 'dsh-discord-bridge')
+  assert.equal(typeof mod.apply, 'function')
+})
+
+test('tool list renders inside a fenced code block', async () => {
+  const { toolListCard } = await import('../src/discord/cards-v2.js')
+  const now = Date.now()
+  const payload = toolListCard([
+    { name: 'bash', args: '{"description":"检查状态"}', endedAt: now },
+    { name: 'edit', args: '{"file_path":"/a"}', endedAt: now },
+    { name: 'fetch', args: '{"url":"https://x"}' },
+  ])
+  const texts = flattenTexts(payload.components)
+  const body = texts.join('\n')
+  assert.match(body, /```/, 'list is fenced')
+  const inner = body.slice(body.indexOf('```') + 3, body.lastIndexOf('```'))
+  const lines = inner.split('\n').filter((l) => l.trim())
+  assert.equal(lines.length, 3, 'one line per call')
+  assert.match(lines[0], /✓ bash\s+检查状态/, 'finished call with its description')
+  assert.match(lines[2], /⟳ fetch/, 'running call keeps the running glyph')
+  // Argument values never appear, only the intent description.
+  assert.ok(!inner.includes('/a'), 'file paths are not rendered')
+  assert.ok(!inner.includes('https://x'), 'urls are not rendered')
+})
+
+test('tool list code block survives the markdown adapter untouched', async () => {
+  const { adaptMarkdownForTextDisplay } = await import('../src/discord/markdown.js')
+  // A pipe inside the fence must not be mistaken for a table row.
+  const src = ['```', '✓ bash  检查状态', '| not | a | table |', '```'].join('\n')
+  assert.equal(adaptMarkdownForTextDisplay(src), src)
+})
+
+test('inlineToolLines renders subtext lines, not a code block or bullets', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const now = Date.now()
+  const out = inlineToolLines([
+    { name: 'bash', args: '{"description":"检查状态"}', endedAt: now },
+    { name: 'edit', args: '{"file_path":"/secret"}', endedAt: now },
+    { name: 'fetch', args: '{"url":"https://x"}' },
+  ])
+  const lines = out.split('\n')
+  assert.equal(lines.length, 3)
+  for (const line of lines) {
+    assert.ok(line.startsWith('-# '), 'every line uses Discord subtext syntax')
+    assert.ok(!line.startsWith('- '), 'not a markdown bullet')
+  }
+  assert.match(lines[0], /✓ `bash` · 检查状态/)
+  assert.match(lines[2], /⟳ `fetch`/, 'running call keeps the running glyph')
+  // Argument values never leak, only the caller-supplied description.
+  assert.ok(!out.includes('/secret'))
+  assert.ok(!out.includes('https://x'))
+  assert.ok(!out.includes('```'), 'no code fence for inline display')
+})
+
+test('inlineToolLines elides the oldest entries past the line cap', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const many = Array.from({ length: 20 }, (_, i) => ({ name: `t${i}`, endedAt: Date.now() }))
+  const out = inlineToolLines(many, { maxLines: 12 })
+  assert.match(out, /更早的 8 次已省略/)
+  const rows = out.split('\n').filter((l) => l.includes('`t'))
+  assert.equal(rows.length, 12)
+})
+
+test('privilege outcome distinguishes approval from system refusal', async () => {
+  const { classifyPrivilegedOutcome, describePrivilegedOutcome, looksLikePermissionDenial } =
+    await import('../src/bridge/privilege-outcome.js')
+
+  assert.equal(classifyPrivilegedOutcome({ status: 'ok', exitCode: 0 }), 'approved')
+  assert.equal(classifyPrivilegedOutcome({ status: 'denied', message: 'bad sig' }), 'denied')
+  // Policy/kernel refusals are reported as denied, not a plain failure.
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'avc:  denied  { read }' }), 'denied')
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'Permission denied' }), 'denied')
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'Access denied' }), 'denied')
+  assert.equal(
+    classifyPrivilegedOutcome({ status: 'error', stderr: 'Interactive authentication required.' }),
+    'denied',
+  )
+  // An ordinary failure is neither an approval nor a permission problem.
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'no such file' }), 'failed')
+
+  assert.match(describePrivilegedOutcome({ status: 'ok', exitCode: 0 }), /已执行/)
+  assert.match(describePrivilegedOutcome({ status: 'error', stderr: 'Permission denied' }), /系统拒绝/)
+  assert.equal(looksLikePermissionDenial({ stderr: 'EACCES' }), true)
+})
+
+test('selinuxHint only appears for an AVC denial', async () => {
+  const { selinuxHint } = await import('../src/bridge/privilege-outcome.js')
+  assert.equal(selinuxHint({ stderr: 'Permission denied' }), undefined)
+  const hint = selinuxHint({ stderr: 'type=AVC msg=audit(1): avc:  denied  { read } for pid=1' })
+  assert.match(hint, /SELinux/, 'names the mechanism')
+  assert.match(hint, /ausearch/, 'explains how to inspect it')
+})
+
+test('decidedApprovalCard renders the denied state', async () => {
+  const { decidedApprovalCard } = await import('../src/discord/cards-v2.js')
+  const denied = decidedApprovalCard('denied')
+  const texts = flattenTexts(denied.components).join('\n')
+  assert.match(texts, /无权限/)
+  const approved = flattenTexts(decidedApprovalCard('approved').components).join('\n')
+  assert.match(approved, /已批准/)
+  const rejected = flattenTexts(decidedApprovalCard('rejected').components).join('\n')
+  assert.match(rejected, /已拒绝/)
+})
+
+test('an AVC denial is condensed into a readable line', async () => {
+  const { summarizeDenial, describePrivilegedOutcome } = await import('../src/bridge/privilege-outcome.js')
+  const avc = {
+    status: 'error',
+    exitCode: 13,
+    stderr:
+      'type=AVC msg=audit(1793192000.123:456): avc:  denied  { read } for  pid=12345 comm="cat" name="shadow" scontext=system_u:system_r:unconfined_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0',
+  }
+  const summary = summarizeDenial(avc)
+  assert.match(summary, /SELinux 拒绝 read/)
+  assert.match(summary, /目标 shadow/)
+  assert.match(summary, /unconfined_t → shadow_t/)
+  // The raw key=value dump must not survive into the card.
+  assert.ok(!summary.includes('ino='), 'audit fields are dropped')
+  assert.ok(!summary.includes('msg=audit'), 'audit prefix is dropped')
+  assert.ok(summary.length < 120, 'summary stays short')
+  assert.match(describePrivilegedOutcome(avc), /系统拒绝执行/)
+})
+
+test('a plain permission error keeps its message', async () => {
+  const { summarizeDenial } = await import('../src/bridge/privilege-outcome.js')
+  assert.match(
+    summarizeDenial({ stderr: 'cat: /etc/shadow: Permission denied' }),
+    /Permission denied/,
+  )
 })
