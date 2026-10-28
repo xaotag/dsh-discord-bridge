@@ -119,15 +119,17 @@ export function inlineToolLines(tools = [], { maxLines = 12 } = {}) {
   if (!list.length) return ''
   const recent = list.slice(-maxLines)
   const hidden = list.length - recent.length
+  // One blank line between calls: consecutive `-#` lines render flush against
+  // each other, so the gap has to come from a real paragraph break.
   const rows = recent.map((tool) => {
     const name = String(tool?.name ?? 'tool').slice(0, 48)
     const running = tool?.endedAt === undefined
-    const description = describeTool(tool?.args)
+    const description = describeTool(tool?.args, name)
     const glyph = running ? '⟳' : '✓'
     return description ? `-# ${glyph} \`${name}\` · ${description}` : `-# ${glyph} \`${name}\``
   })
   if (hidden > 0) rows.unshift(`-# …更早的 ${hidden} 次已省略`)
-  return rows.join('\n')
+  return rows.join('\n\n')
 }
 
 /** Tool-run card: one line per call, no argument values. */
@@ -156,21 +158,74 @@ export function toolListCard(tools = [], { maxLines = 24, title = '🛠 工具�
   return cardPayload({ accentColor: ACCENT.working, title, body, footer })
 }
 
-/** Intent-only description; argument values are never rendered. */
-function describeTool(args) {
+/**
+ * Tools whose arguments name the file (or pattern) they operate on.
+ *
+ * Only the file-operating tools are listed: for `grep` the same `pattern` field
+ * is a search term, not a target, so showing it would misrepresent the call.
+ */
+const FILE_TOOL_FIELDS = {
+  read: ['file_path', 'path', 'filePath', 'filename'],
+  write: ['file_path', 'path', 'filePath', 'filename'],
+  edit: ['file_path', 'path', 'filePath', 'filename'],
+  multiedit: ['file_path', 'path', 'filePath', 'filename'],
+  glob: ['pattern'],
+}
+
+/**
+ * Describe a tool call for the transcript.
+ *
+ * Priority:
+ *   1. an explicit intent field the model supplied (description/summary/…)
+ *   2. for file tools, the file being operated on — the path is the single most
+ *      useful fact about a read/write/edit, and it is not secret material
+ *
+ * Everything else stays blank rather than echoing raw argument values.
+ */
+function describeTool(args, toolName) {
   const raw = String(args ?? '').trim()
   if (!raw || raw === '{}') return ''
+  let parsed
   try {
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
-    for (const field of ['description', 'summary', 'label', 'title', 'reason', 'purpose']) {
-      const value = parsed[field]
-      if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 48)
-    }
+    parsed = JSON.parse(raw)
   } catch {
-    /* ignore malformed arguments */
+    return ''
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
+
+  for (const field of ['description', 'summary', 'label', 'title', 'reason', 'purpose']) {
+    const value = parsed[field]
+    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 48)
+  }
+
+  const name = String(toolName ?? '').toLowerCase()
+  const fields = FILE_TOOL_FIELDS[name]
+  if (fields) {
+    for (const field of fields) {
+      const value = parsed[field]
+      if (typeof value === 'string' && value.trim()) {
+        return shortenPath(value.trim())
+      }
+    }
   }
   return ''
+}
+
+/**
+ * Trim a path to something readable in one line: keep the last two segments
+ * and mark the elision, so `/home/user/projects/app/src/deep/file.js` becomes
+ * `…/src/deep/file.js` instead of flooding the card.
+ */
+function shortenPath(path, { maxWidth = 52 } = {}) {
+  const clean = String(path).trim().replace(/\s+/g, ' ')
+  if (clean.length <= maxWidth) return clean
+  const parts = clean.split('/').filter(Boolean)
+  if (parts.length >= 2) {
+    const tail = parts.slice(-2).join('/')
+    const candidate = `…/${tail}`
+    if (candidate.length <= maxWidth) return candidate
+  }
+  return `…${clean.slice(-(maxWidth - 1))}`
 }
 
 /** Final answer card in one of the terminal states, with inline tool lines. */

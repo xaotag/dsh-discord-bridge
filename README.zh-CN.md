@@ -147,9 +147,13 @@ Discord 内查看当前频道最近操作：
 运行中标记 `⟳`、完成后标记 `✓`，因此调用次数多的任务不会堆成一列近乎相同的
 embed。答案卡片原地编辑，长任务下历史不丢失。
 
-每行是工具名加**描述**：调用方提供了意图字段（`description`、`summary`、`label`、
-`title`、`reason`、`purpose`）时跟在工具名后显示，否则只显示工具名。参数值——
-命令、路径、URL、匹配模式、prompt——一律不渲染。
+每行是工具名加**描述**，各次调用之间空一行。描述按优先级取：
+
+1. 调用方提供的意图字段（`description`、`summary`、`label`、`title`、`reason`、`purpose`）
+2. 文件类工具（`read`/`write`/`edit`）显示**操作的文件**，`glob` 显示匹配模式
+
+其余工具只显示工具名。参数值——命令、URL、prompt——一律不渲染；过长的路径
+会截成 `…/src/file.js` 形式。
 
 ### Markdown 适配（Components V2）
 

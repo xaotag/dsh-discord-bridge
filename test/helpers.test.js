@@ -874,26 +874,57 @@ test('tool list code block survives the markdown adapter untouched', async () =>
   assert.equal(adaptMarkdownForTextDisplay(src), src)
 })
 
-test('inlineToolLines renders subtext lines, not a code block or bullets', async () => {
+test('inlineToolLines renders subtext lines separated by a blank line', async () => {
   const { inlineToolLines } = await import('../src/discord/cards-v2.js')
   const now = Date.now()
   const out = inlineToolLines([
     { name: 'bash', args: '{"description":"检查状态"}', endedAt: now },
-    { name: 'edit', args: '{"file_path":"/secret"}', endedAt: now },
+    { name: 'edit', args: '{"file_path":"/a/b/renderer.js"}', endedAt: now },
     { name: 'fetch', args: '{"url":"https://x"}' },
   ])
-  const lines = out.split('\n')
+  // `-#` lines render flush against each other, so separation is a paragraph
+  // break rather than an extra space.
+  const lines = out.split('\n').filter((l) => l.trim())
   assert.equal(lines.length, 3)
+  assert.ok(out.includes('\n\n'), 'calls are separated by a blank line')
   for (const line of lines) {
     assert.ok(line.startsWith('-# '), 'every line uses Discord subtext syntax')
     assert.ok(!line.startsWith('- '), 'not a markdown bullet')
   }
   assert.match(lines[0], /✓ `bash` · 检查状态/)
   assert.match(lines[2], /⟳ `fetch`/, 'running call keeps the running glyph')
-  // Argument values never leak, only the caller-supplied description.
-  assert.ok(!out.includes('/secret'))
+  // A URL argument is still never rendered.
   assert.ok(!out.includes('https://x'))
   assert.ok(!out.includes('```'), 'no code fence for inline display')
+})
+
+test('file tools show the file they operate on', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const now = Date.now()
+  const line = (name, args) =>
+    inlineToolLines([{ name, args, endedAt: now }]).replace(/^-# ✓ `/m, '').split('` · ')[1]?.trim()
+
+  assert.equal(line('read', '{"file_path":"/a/b/c.js"}'), '/a/b/c.js')
+  assert.equal(line('edit', '{"file_path":"/a/b/c.js"}'), '/a/b/c.js')
+  assert.equal(line('write', '{"file_path":"/a/b/c.js"}'), '/a/b/c.js')
+  assert.equal(line('glob', '{"pattern":"src/**/*.js"}'), 'src/**/*.js')
+
+  // A search term is not a target, so grep stays bare.
+  assert.equal(line('grep', '{"pattern":"TODO"}'), undefined)
+  // Neither does an unrelated argument leak in.
+  assert.equal(line('bash', '{"command":"ls -la"}'), undefined)
+
+  // An explicit description always wins over the path.
+  assert.equal(line('read', '{"file_path":"/a/b.js","description":"查看配置"}'), '查看配置')
+})
+
+test('a long file path is shortened rather than flooding the line', async () => {
+  const { inlineToolLines } = await import('../src/discord/cards-v2.js')
+  const deep = '/home/user/projects/app/src/deeply/nested/directory/structure/file.js'
+  const out = inlineToolLines([{ name: 'read', args: JSON.stringify({ file_path: deep }), endedAt: Date.now() }])
+  assert.ok(!out.includes(deep), 'full path is not printed')
+  assert.match(out, /file\.js/, 'the file name survives')
+  assert.ok(out.length < 120, 'line stays short')
 })
 
 test('inlineToolLines elides the oldest entries past the line cap', async () => {
