@@ -33,11 +33,15 @@ import {
   STOP_BUTTON_PREFIX,
 } from './src/discord/renderer.js'
 import {
+  QUESTION_SELECT_PREFIX,
+  QUESTION_SKIP_PREFIX,
+  answeredQuestionCard,
   approvalCard,
   decidedApprovalCard,
   finalCard,
   noticeCard,
   placeholderCard,
+  questionCard,
 } from './src/discord/cards-v2.js'
 import { textChunks } from './src/discord/components-v2.js'
 import { readTextAttachments } from './src/discord/attachments.js'
@@ -47,6 +51,7 @@ import { StreamReporter } from './src/bridge/stream-reporter.js'
 import { DeepSeekApiClient } from './src/deepseek/api-client.js'
 import { ThreadManager, shouldCreateThread } from './src/bridge/thread-manager.js'
 import { ApprovalRegistry } from './src/bridge/approval.js'
+import { QuestionRegistry } from './src/bridge/question-registry.js'
 import { PrivilegedClient } from './src/bridge/privileged-client.js'
 import {
   classifyPrivilegedOutcome,
@@ -86,6 +91,11 @@ export function apply(ctx, rawConfig = {}) {
   transport.setAudit(audit)
   const agents = new AgentService({ ctx, config, state, logger, audit })
   const approvals = new ApprovalRegistry({ logger })
+  const questions_ = new QuestionRegistry({ logger })
+  // `user-questions/request` carries no channel id, and a question card has to
+  // be posted somewhere. The most recent channel that started a turn is the
+  // right target: DSH only asks from a live foreground turn.
+  let lastActiveChannelId
   const privileged = new PrivilegedClient({
     dshHome: process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
     logger,
@@ -583,6 +593,9 @@ export function apply(ctx, rawConfig = {}) {
 
     const kind = guildId === undefined ? 'dm' : message.channel?.isThread?.() ? 'thread' : 'channel'
     const key = channelId
+    // Remember where the conversation is happening: a user-questions request
+    // carries no channel, and this is the card's only sensible destination.
+    lastActiveChannelId = channelId
     audit.record({
       category: 'discord',
       action: 'message.received',
@@ -983,6 +996,12 @@ export function apply(ctx, rawConfig = {}) {
   async function handleInteraction(interaction) {
     if (disposed) return
     if (interaction?.isButton?.() && (await handleButton(interaction))) return
+    if (interaction?.isStringSelectMenu?.() && isQuestionCustomId(interaction.customId)) {
+      await handleQuestionSelect(interaction).catch((error) =>
+        logger.warn('记录问题答案失败:', error?.message || String(error)),
+      )
+      return
+    }
     if (interaction?.isAutocomplete?.() && interaction.commandName === 'dsh') {
       await handleAutocomplete(interaction).catch((error) =>
         logger.warn('自动补全失败:', error?.message || String(error)),
@@ -1179,6 +1198,151 @@ export function apply(ctx, rawConfig = {}) {
    * sensitive action runs. Resolves to 'approved' | 'rejected' | 'timeout';
    * it never rejects, so a caller can treat a timeout as a refusal.
    */
+  /**
+   * Answer a DSH `ask_user_question` call over Discord.
+   *
+   * Registered as a `user-questions/request` answerer. DSH blocks the agent on
+   * this promise, so every path must settle it: answered, skipped, timed out, or
+   * failed to post. A card per question keeps each dropdown small and lets the
+   * user work through a multi-question call one step at a time.
+   */
+  async function answerUserQuestions(request) {
+    const questions = Array.isArray(request?.questions) ? request.questions : []
+    if (!questions.length) return { answers: [] }
+
+    // The request carries the asking agent but no channel. Resolving through
+    // the live runtime gives the exact channel this conversation belongs to;
+    // the most-recently-active channel is only a fallback for an agent we do not
+    // own (for example one started outside this bridge).
+    const channelId = agents.channelForAgent(request?.agent) || lastActiveChannelId
+    if (!channelId) {
+      logger.warn('收到用户提问但没有可用频道，按跳过处理')
+      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+    }
+
+    const entry = questions_.create({ questions, channelId })
+    audit.record({
+      category: 'discord',
+      action: 'question.request',
+      status: 'ok',
+      channelId,
+      conversation: channelId,
+      detail: { requestId: entry.id, count: questions.length },
+    })
+
+    try {
+      for (let index = 0; index < questions.length; index += 1) {
+        // A later question may already be settled if the request timed out.
+        if (!questions_.get(entry.id)) break
+        const payload = questionCard({
+          requestId: entry.id,
+          question: questions[index],
+          index,
+          total: questions.length,
+          expiresAt: entry.expiresAt,
+        })
+        const sent = await transport.send(channelId, payload)
+        questions_.get(entry.id)?.messageIds.push({ index, messageId: sent.messageId })
+      }
+    } catch (error) {
+      logger.warn('发送问题卡片失败，按跳过处理:', error?.message || String(error))
+      questions_.finish(entry.id, 'error')
+      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+    }
+
+    const settled = await entry.answered
+    audit.record({
+      category: 'discord',
+      action: 'question.answered',
+      status: settled.reason === 'timeout' ? 'expired' : 'ok',
+      channelId,
+      conversation: channelId,
+      detail: {
+        requestId: entry.id,
+        reason: settled.reason,
+        answered: settled.answers.filter((a) => a.selected.length > 0 || a.custom).length,
+        total: settled.answers.length,
+      },
+    })
+    return { answers: settled.answers }
+  }
+
+  /** True for a custom_id owned by the question card. */
+  function isQuestionCustomId(customId) {
+    const id = String(customId ?? '')
+    return id.startsWith(QUESTION_SELECT_PREFIX) || id.startsWith(QUESTION_SKIP_PREFIX)
+  }
+
+  /**
+   * Record a dropdown selection or a skip, then retire that card.
+   *
+   * `custom_id` is `<prefix><requestId>:<questionIndex>`; the selected option
+   * values are indices into the original option list, so the label text is
+   * recovered exactly as DSH sent it rather than re-parsed from the wire.
+   */
+  async function handleQuestionSelect(interaction) {
+    const customId = String(interaction.customId ?? '')
+    const skip = customId.startsWith(QUESTION_SKIP_PREFIX)
+    const prefix = skip ? QUESTION_SKIP_PREFIX : QUESTION_SELECT_PREFIX
+    const rest = customId.slice(prefix.length)
+    const sep = rest.lastIndexOf(':')
+    const requestId = rest.slice(0, sep)
+    const index = Number(rest.slice(sep + 1))
+
+    await transport.deferButton(interaction).catch(() => undefined)
+
+    if (!authorized(config, interaction.user?.id, interaction.guildId || undefined, interaction.channelId || '')) {
+      await transport.replyEphemeral(interaction, '你不在授权名单内。').catch(() => undefined)
+      return
+    }
+
+    const entry = questions_.get(requestId)
+    const question = entry?.questions?.[index]
+    if (!entry || !question) {
+      await transport.replyEphemeral(interaction, '这个问题已经失效或已作答。').catch(() => undefined)
+      return
+    }
+
+    let selected = []
+    let custom
+    if (!skip) {
+      const values = Array.isArray(interaction.values) ? interaction.values : []
+      const options = Array.isArray(question.options) ? question.options : []
+      selected = values
+        .map((value) => options[Number(value)])
+        .filter(Boolean)
+        .map((option) => option.label)
+      if (!selected.length) {
+        await transport.replyEphemeral(interaction, '没有识别到有效的选择。').catch(() => undefined)
+        return
+      }
+    }
+
+    const result = questions_.answer(requestId, question.id, { selected, custom })
+    if (!result.ok) {
+      await transport.replyEphemeral(interaction, '这个问题已经失效或已作答。').catch(() => undefined)
+      return
+    }
+
+    // Replace this question's controls with its outcome.
+    try {
+      const messageId = interaction.message?.id
+      if (messageId) {
+        await transport.edit(
+          interaction.channelId,
+          messageId,
+          answeredQuestionCard({ question, selected, custom, skipped: skip }),
+        )
+      }
+    } catch (error) {
+      logger.warn('更新问题卡片失败:', error?.message || String(error))
+    }
+
+    await transport
+      .replyEphemeral(interaction, skip ? '已跳过。' : `已记录：${selected.join('、')}`)
+      .catch(() => undefined)
+  }
+
   async function requestApproval({ channelId, userId, description, title, footer } = {}) {
     if (!channelId) return 'timeout'
     const request = approvals.create({ channelId, userId, description })
@@ -1210,14 +1374,46 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
+  /**
+   * Answer `ask_user_question` from Discord.
+   *
+   * Scope-filtered dispatch admits untagged listeners — a root listener sees
+   * every agent's request (see `@deepseek-ai/dsh-scope`). Without any answerer
+   * DSH rejects with `no user-questions answerer accepted the request`, which is
+   * why a turn that called this tool used to hang forever.
+   *
+   * A request whose channel cannot be resolved is handed to `next()` so the Web
+   * answerer still gets a chance, and any failure settles as all-skipped: the
+   * agent must never be left waiting on a promise nobody will resolve.
+   */
+  ctx.on('user-questions/request', async (request, next) => {
+    if (disposed) return next()
+    const questions = Array.isArray(request?.questions) ? request.questions : []
+    if (!questions.length) return next()
+
+    const channelId = agents.channelForAgent(request?.agent)
+    logger.log(
+      `[user-questions] 收到 ${questions.length} 个问题 agent=${Boolean(request?.agent)} channel=${channelId || '(未匹配)'}`,
+    )
+    if (!channelId) return next()
+
+    try {
+      return await answerUserQuestions(request)
+    } catch (error) {
+      logger.warn('处理 ask_user_question 失败，按跳过处理:', error?.message || String(error))
+      return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+    }
+  })
+
   ctx.effect(
     () => () => {
       if (disposed) return
       disposed = true
       if (cleanupTimer) clearInterval(cleanupTimer)
       return (async () => {
-        // Settle any awaited confirmation so no turn hangs on shutdown.
+        // Settle any awaited confirmation or question so no turn hangs.
         approvals.clear('timeout')
+        questions_.clear('timeout')
         await Promise.allSettled([agents.dispose(), transport.stop(), state.close(), audit.close()])
         logger.log('插件卸载，Discord 连接和 Agent 已释放')
       })()

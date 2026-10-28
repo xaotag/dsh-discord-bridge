@@ -22,6 +22,22 @@ export class AgentService {
     this.disposeAgent = ctx.on('agent/disposed', (payload) => this.observeDisposed(payload))
   }
 
+  /**
+   * Channel that owns an Agent.
+   *
+   * `user-questions/request` carries the asking agent but no channel, and a
+   * question card has to be posted somewhere. Runtimes hold the live agent for
+   * each channel, so matching on identity gives the exact destination rather
+   * than guessing the most recently active channel.
+   */
+  channelForAgent(agent) {
+    if (!agent) return undefined
+    for (const [key, runtime] of this.runtimes) {
+      if (runtime?.agent === agent || runtime?.handle?.agent === agent) return runtime.channelId || key
+    }
+    return undefined
+  }
+
   runtime(key, meta = {}) {
     let runtime = this.runtimes.get(key)
     if (!runtime) {
@@ -165,6 +181,7 @@ export class AgentService {
   }
 
   async setupAgent(agentCtx, runtime) {
+    this.logger.log?.(`[agent-setup] 进入 setupAgent key=${runtime.key} hasCtx=${Boolean(agentCtx)} hasOn=${Boolean(agentCtx?.on)}`)
     await this.mountPreset(agentCtx, runtime)
     const systemPrompt = agentCtx?.systemPrompt || this.ctx.get('systemPrompt')
     if (systemPrompt?.section) {

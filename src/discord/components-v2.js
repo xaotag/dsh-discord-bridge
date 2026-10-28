@@ -21,6 +21,7 @@ export const IS_COMPONENTS_V2 = 1 << 15
 export const COMPONENT_TYPE = {
   ACTION_ROW: 1,
   BUTTON: 2,
+  STRING_SELECT: 3,
   TEXT_DISPLAY: 10,
   SEPARATOR: 14,
   CONTAINER: 17,
@@ -65,6 +66,39 @@ export function button({ customId, label, style = 2, emoji, disabled = false }) 
   const node = { type: COMPONENT_TYPE.BUTTON, style, custom_id: String(customId), label }
   if (emoji) node.emoji = emoji
   if (disabled) node.disabled = true
+  return node
+}
+
+/** Discord allows at most 25 options in one select and 25 chars per label. */
+export const STRING_SELECT_MAX_OPTIONS = 25
+export const STRING_SELECT_LABEL_LIMIT = 100
+
+/**
+ * A dropdown of choices.
+ *
+ * Buttons cap out at five per row and turn a long question into a wall of
+ * buttons; a select scales to 25 options in one control and supports
+ * multi-select. Values travel as the option index so the label text never has to
+ * be parsed back out of a custom_id.
+ */
+export function stringSelect({ customId, options = [], placeholder, multi = false, maxValues }) {
+  const mapped = options.slice(0, STRING_SELECT_MAX_OPTIONS).map((option, index) => {
+    const value = option?.value ?? String(index)
+    const node = {
+      label: String(option?.label ?? value).slice(0, STRING_SELECT_LABEL_LIMIT),
+      value: String(value),
+    }
+    if (option?.description) node.description = String(option.description).slice(0, STRING_SELECT_LABEL_LIMIT)
+    return node
+  })
+  const node = {
+    type: COMPONENT_TYPE.STRING_SELECT,
+    custom_id: String(customId),
+    options: mapped,
+    min_values: multi ? 0 : 1,
+    max_values: multi ? Math.max(1, Math.min(maxValues ?? mapped.length, mapped.length)) : 1,
+  }
+  if (placeholder) node.placeholder = String(placeholder).slice(0, 150)
   return node
 }
 

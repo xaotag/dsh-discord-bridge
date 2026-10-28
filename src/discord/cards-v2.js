@@ -17,6 +17,7 @@ import {
   container,
   countComponents,
   separator,
+  stringSelect,
   textChunks,
   textDisplay,
   v2Payload,
@@ -285,10 +286,101 @@ export function noticeCard(text, { title, accentColor = ACCENT.notice, footer } 
   return cardPayload({ accentColor, title, body: text, footer })
 }
 
+/** Custom-ID prefixes for the question card's controls. */
+export const QUESTION_SELECT_PREFIX = 'dsh:q:sel:'
+export const QUESTION_SKIP_PREFIX = 'dsh:q:skip:'
+
+/**
+ * One DSH question rendered as a Discord card.
+ *
+ * The dropdown carries the options; `custom_id` encodes request id + question
+ * index so the handler knows which answer to record. A skip button is always
+ * present because DSH treats an unanswered question as skipped, and an explicit
+ * control makes that outcome discoverable rather than implied.
+ */
+export function questionCard({
+  requestId,
+  question,
+  index,
+  total,
+  expiresAt,
+  selectPrefix = QUESTION_SELECT_PREFIX,
+  skipPrefix = QUESTION_SKIP_PREFIX,
+} = {}) {
+  const q = question ?? {}
+  const options = Array.isArray(q.options) ? q.options : []
+  const children = []
+
+  const heading = q.header ? `${q.header}` : '❓ 需要你的选择'
+  children.push(textDisplay(`## ${heading}`))
+
+  const body = []
+  if (q.question) body.push(q.question)
+  if (q.detail) body.push(q.detail)
+  const position = total > 1 ? `-# 第 ${index + 1}/${total} 个问题` : undefined
+  if (position) body.push(position)
+  children.push(textDisplay(body.join('\n\n') || '（无内容）'))
+
+  if (options.length) {
+    children.push(
+      actionRow([
+        stringSelect({
+          customId: `${selectPrefix}${requestId}:${index}`,
+          options: options.map((option, i) => ({
+            label: option?.label ?? `选项 ${i + 1}`,
+            value: String(i),
+            description: option?.description,
+          })),
+          placeholder: q.multiSelect ? '选择一项或多项' : '选择一项',
+          multi: Boolean(q.multiSelect),
+        }),
+      ]),
+    )
+  }
+
+  children.push(
+    actionRow([
+      button({
+        customId: `${skipPrefix}${requestId}:${index}`,
+        label: '跳过',
+        style: 2,
+        emoji: { name: '⏭️' },
+      }),
+    ]),
+  )
+
+  const bits = []
+  if (expiresAt) {
+    const left = Math.max(0, expiresAt - Date.now())
+    if (left > 0) bits.push(`${Math.ceil(left / 1000)}s 后失效`)
+  }
+  if (bits.length) {
+    children.push(separator({ spacing: 1 }))
+    children.push(textDisplay(`-# ${bits.join(' · ')}`))
+  }
+
+  return v2Payload([container(children, { accentColor: ACCENT.notice })])
+}
+
+/** The same card once answered, with the controls removed. */
+export function answeredQuestionCard({ question, selected = [], custom, skipped = false } = {}) {
+  const q = question ?? {}
+  const lines = []
+  if (q.question) lines.push(q.question)
+  if (skipped) lines.push('-# ⏭️ 已跳过')
+  else if (custom) lines.push(`-# ✅ 自定义：${custom}`)
+  else if (selected.length) lines.push(`-# ✅ 已选：${selected.join('、')}`)
+  else lines.push('-# ⏭️ 已跳过')
+  return cardPayload({
+    accentColor: skipped ? ACCENT.cancelled : ACCENT.completed,
+    title: q.header || '❓ 已作答',
+    body: lines.join('\n\n'),
+  })
+}
+
 /** Confirmation card with approve / reject buttons. */
 export function approvalCard({
-  requestId,
-  title = '⚠️ 需要确认',
+  requestId,  title = '⚠️ 需要确认',
   description,
   footer,
   expiresAt,
