@@ -536,3 +536,59 @@ test('malformed arguments degrade to the bare tool name', async () => {
   const embed = toolCardsPayload([{ name: 'bash', args: 'not json', startedAt: 1, endedAt: 2 }]).embeds[0]
   assert.equal(embed.description, '✓ `bash`')
 })
+
+test('approval registry resolves once and reports duplicates as settled', async () => {
+  const { ApprovalRegistry } = await import('../src/bridge/approval.js')
+  const registry = new ApprovalRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+  const request = registry.create({ channelId: 'c1', userId: 'u1' })
+  assert.equal(registry.size, 1)
+  assert.equal(registry.channelOf(request.id), 'c1')
+  assert.equal(registry.finish(request.id, 'approved'), 'approved')
+  assert.equal(await request.decided, 'approved')
+  assert.equal(registry.size, 0)
+  // A second click is a no-op rather than a second decision.
+  assert.equal(registry.finish(request.id, 'rejected'), undefined)
+})
+
+test('approval registry times out unanswered requests', async () => {
+  const { ApprovalRegistry } = await import('../src/bridge/approval.js')
+  const registry = new ApprovalRegistry({ timeoutMs: 30, logger: { warn() {} } })
+  const request = registry.create({ channelId: 'c1' })
+  assert.equal(await request.decided, 'timeout')
+  assert.equal(registry.size, 0)
+})
+
+test('approval registry clear settles everything so no caller hangs', async () => {
+  const { ApprovalRegistry } = await import('../src/bridge/approval.js')
+  const registry = new ApprovalRegistry({ timeoutMs: 5000, logger: { warn() {} } })
+  const a = registry.create({ channelId: 'c1' })
+  const b = registry.create({ channelId: 'c1' })
+  registry.clear('timeout')
+  assert.equal(await a.decided, 'timeout')
+  assert.equal(await b.decided, 'timeout')
+  assert.equal(registry.size, 0)
+})
+
+test('approval card carries approve and reject buttons', async () => {
+  const { approvalPayload, APPROVE_BUTTON_PREFIX, REJECT_BUTTON_PREFIX, decidedApprovalPayload } =
+    await import('../src/discord/renderer.js')
+  const payload = approvalPayload({ requestId: 'r1', description: '删除 3 个文件', expiresAt: Date.now() + 60000 })
+  const row = payload.components[0]
+  assert.equal(row.components.length, 2)
+  assert.equal(row.components[0].custom_id, APPROVE_BUTTON_PREFIX + 'r1')
+  assert.equal(row.components[1].custom_id, REJECT_BUTTON_PREFIX + 'r1')
+  assert.match(payload.embeds[0].description, /删除 3 个文件/)
+
+  const decided = decidedApprovalPayload('approved')
+  assert.equal(decided.components.length, 0, 'buttons are removed after deciding')
+  assert.equal(decided.embeds[0].title, '✅ 已批准')
+})
+
+test('approval button custom_id stays under the Discord 100-char cap', async () => {
+  const { approvalButtons, APPROVE_BUTTON_PREFIX } = await import('../src/discord/renderer.js')
+  const row = approvalButtons('x'.repeat(200))
+  for (const component of row.components) {
+    assert.ok(component.custom_id.length <= 100, 'custom_id must fit in 100 chars')
+  }
+  assert.ok(row.components[0].custom_id.startsWith(APPROVE_BUTTON_PREFIX))
+})

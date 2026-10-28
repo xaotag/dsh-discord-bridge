@@ -233,6 +233,27 @@ All bridge APIs are registered as `/dsh` subcommand groups:
 | `/dsh system` | `help` | Help |
 | | `ping` | WebSocket / processing latency |
 | | `audit` | Recent operations for the current channel |
+| | `confirm <action>` | Post an approve/reject card and wait for the decision |
+
+## Approval buttons
+
+Sensitive actions can be gated on an explicit operator decision. Posting an
+approval card yields two buttons:
+
+| Button | Style | Resolves to |
+|---|---|---|
+| ✅ 批准 | Green | `approved` |
+| 🚫 拒绝 | Red | `rejected` |
+
+The requesting turn awaits the decision (`approved` / `rejected` / `timeout`);
+it never throws, so a timeout is safe to treat as a refusal. Unanswered cards
+expire after 5 minutes and the buttons are stripped once a decision is made.
+A second click reports that the request is already settled instead of deciding
+twice.
+
+Both buttons go through the same authorization check as every other command,
+and each decision is written to the audit log as `button.approve` /
+`button.reject`.
 
 ## DeepSeek official REST API group
 

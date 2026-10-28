@@ -431,6 +431,79 @@ export function withStopButton(payload, messageId) {
   return { ...payload, components: [stopButton(messageId)] }
 }
 
+/** Custom-ID scheme for the approval buttons handled by index.js. */
+export const APPROVE_BUTTON_PREFIX = 'dsh:approve:'
+export const REJECT_BUTTON_PREFIX = 'dsh:reject:'
+
+/**
+ * Approve / reject row for a confirmation request.
+ *
+ * Discord caps a custom_id at 100 characters, so the token carries a short
+ * request id (not the message id): `dsh:approve:<requestId>`.
+ */
+export function approvalButtons(requestId) {
+  const id = clipOneLine(requestId, 60)
+  return {
+    type: 1,
+    components: [
+      {
+        type: 2,
+        style: 3,
+        label: '批准',
+        emoji: { name: '✅' },
+        custom_id: `${APPROVE_BUTTON_PREFIX}${id}`,
+      },
+      {
+        type: 2,
+        style: 4,
+        label: '拒绝',
+        emoji: { name: '🚫' },
+        custom_id: `${REJECT_BUTTON_PREFIX}${id}`,
+      },
+    ],
+  }
+}
+
+/**
+ * The confirmation card shown before a sensitive action runs.
+ *
+ * The detail is passed through the same mention suppression as any other
+ * agent-controlled text; no arguments are rendered beyond what the caller
+ * supplies as a description.
+ */
+export function approvalPayload({ requestId, title, description, footer, expiresAt } = {}) {
+  const bits = []
+  if (footer) bits.push(suppressMentions(footer))
+  if (expiresAt) {
+    const left = Math.max(0, expiresAt - Date.now())
+    if (left > 0) bits.push(`${Math.ceil(left / 1000)}s 后失效`)
+  }
+  const payload = toPayload(
+    buildEmbed({
+      color: EMBED_COLORS.working,
+      title: title || '⚠️ 需要确认',
+      description: description || '（无描述）',
+      footer: bits.join(' · '),
+      maxEmbeds: 1,
+    }),
+  )
+  return { ...payload, components: [approvalButtons(requestId)] }
+}
+
+/** Replace the buttons with a plain outcome line once decided. */
+export function decidedApprovalPayload(decision, { title, description } = {}) {
+  const approved = decision === 'approved'
+  const payload = toPayload(
+    buildEmbed({
+      color: approved ? EMBED_COLORS.completed : EMBED_COLORS.cancelled,
+      title: title || (approved ? '✅ 已批准' : '🚫 已拒绝'),
+      description: description || (approved ? '操作已批准。' : '操作已拒绝。'),
+      maxEmbeds: 1,
+    }),
+  )
+  return { ...payload, components: [] }
+}
+
 /** Streaming progress caption shown above the model output ("正在调用 3 个工具…"). */
 export function progressCaption(activity) {
   if (!activity) return ''

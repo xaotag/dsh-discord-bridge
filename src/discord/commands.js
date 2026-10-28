@@ -127,7 +127,15 @@ export const dshCommand = new SlashCommandBuilder()
       .setDescription('系统与诊断')
       .addSubcommand((c) => c.setName('help').setDescription('查看帮助'))
       .addSubcommand((c) => c.setName('ping').setDescription('检查 Bot/网关延迟'))
-      .addSubcommand((c) => c.setName('audit').setDescription('查看当前频道最近的操作日志（不含对话内容）')),
+      .addSubcommand((c) => c.setName('audit').setDescription('查看当前频道最近的操作日志（不含对话内容）'))
+      .addSubcommand((c) =>
+        c
+          .setName('confirm')
+          .setDescription('请求一次操作确认（批准/拒绝按钮）')
+          .addStringOption((o) =>
+            o.setName('action').setDescription('要确认的操作描述').setRequired(true),
+          ),
+      ),
   )
 
 export const DSH_COMMAND_BODY = dshCommand.toJSON()
@@ -206,6 +214,7 @@ export function normalizeInteraction(interaction) {
     steer: ['task', 'steer'],
     help: ['system', 'help'],
     audit: ['system', 'audit'],
+    confirm: ['system', 'confirm'],
   }
   if (!group && legacy[command]) {
     const [g, c] = legacy[command]

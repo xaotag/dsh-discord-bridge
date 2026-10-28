@@ -26,8 +26,12 @@ import {
   parseDeepSeekTextCommand,
 } from './src/discord/deepseek-commands.js'
 import {
+  APPROVE_BUTTON_PREFIX,
+  REJECT_BUTTON_PREFIX,
   STOP_BUTTON_PREFIX,
+  approvalPayload,
   chunkDiscordText,
+  decidedApprovalPayload,
   finalEmbed,
   notificationPayload,
   placeholderPayload,
@@ -38,6 +42,7 @@ import { AgentService, extractSessionId } from './src/bridge/agent-service.js'
 import { StreamReporter } from './src/bridge/stream-reporter.js'
 import { DeepSeekApiClient } from './src/deepseek/api-client.js'
 import { ThreadManager, shouldCreateThread } from './src/bridge/thread-manager.js'
+import { ApprovalRegistry } from './src/bridge/approval.js'
 import { AuditLog } from './src/audit/db.js'
 import { UNTRUSTED_INPUT_POLICY } from './src/bridge/untrusted.js'
 
@@ -70,6 +75,7 @@ export function apply(ctx, rawConfig = {}) {
   const transport = new DiscordTransport({ logger, rateLimiter: limiter })
   transport.setAudit(audit)
   const agents = new AgentService({ ctx, config, state, logger, audit })
+  const approvals = new ApprovalRegistry({ logger })
   const deepseek = new DeepSeekApiClient({ ctx, logger, audit })
   const threads = new ThreadManager({ transport, archiveMinutes: config.threadArchiveMinutes, logger })
 
@@ -399,6 +405,37 @@ export function apply(ctx, rawConfig = {}) {
             : '当前频道还没有操作记录。',
           { replyToMessageId },
         )
+        return
+      }
+      case 'system/confirm': {
+        const action = String(arg || '').trim()
+        if (!action) {
+          await respond(target, '用法：`/dsh system confirm <要确认的操作>`', { replyToMessageId })
+          return
+        }
+        const channelIdForApproval = target.channelId || channelId
+        const decision = await requestApproval({
+          channelId: channelIdForApproval,
+          userId: interaction?.user?.id,
+          description: action,
+          footer: '点击按钮决定是否继续',
+        })
+        audit.record({
+          category: 'discord',
+          action: 'approval.decided',
+          status: decision === 'timeout' ? 'expired' : 'ok',
+          channelId: channelIdForApproval,
+          conversation: channelIdForApproval,
+          userId: interaction?.user?.id,
+          detail: { decision, action },
+        })
+        if (decision === 'timeout') {
+          await respond(target, '⏱ 确认已超时，操作未执行。', { replyToMessageId })
+        } else if (decision === 'approved') {
+          await respond(target, `✅ 已批准：${action}`, { replyToMessageId })
+        } else {
+          await respond(target, '🚫 已拒绝，操作未执行。', { replyToMessageId })
+        }
         return
       }
       case 'thread/create': {
@@ -731,6 +768,60 @@ export function apply(ctx, rawConfig = {}) {
   // ---------------------------------------------------------------- buttons
 
   /**
+   * "批准" / "拒绝" buttons on a confirmation card.
+   *
+   * The custom_id carries a short request id that indexes the approval
+   * registry; settling it resolves the promise the requesting turn is awaiting.
+   * A second click finds nothing pending and reports that instead of double
+   * deciding.
+   */
+  async function handleApprovalButton(interaction, customId) {
+    const approved = customId.startsWith(APPROVE_BUTTON_PREFIX)
+    const rejected = customId.startsWith(REJECT_BUTTON_PREFIX)
+    if (!approved && !rejected) return false
+    const prefix = approved ? APPROVE_BUTTON_PREFIX : REJECT_BUTTON_PREFIX
+    const requestId = customId.slice(prefix.length)
+    const channelId = interaction.channelId
+    const guildId = interaction.guildId || undefined
+    await transport.deferButton(interaction).catch(() => undefined)
+    if (!channelId || !authorized(config, interaction.user?.id, guildId, channelId)) {
+      await transport.replyEphemeral(interaction, '你不在授权名单内。').catch(() => undefined)
+      return true
+    }
+    const entry = approvals.get(requestId)
+    if (!entry) {
+      await transport
+        .replyEphemeral(interaction, '这个确认已经失效或已被处理。')
+        .catch(() => undefined)
+      return true
+    }
+    const decision = approved ? 'approved' : 'rejected'
+    approvals.finish(requestId, decision)
+    audit.record({
+      category: 'discord',
+      action: approved ? 'button.approve' : 'button.reject',
+      status: 'ok',
+      channelId,
+      guildId,
+      conversation: channelId,
+      userId: interaction.user?.id,
+      detail: { requestId },
+    })
+    try {
+      const messageId = interaction.message?.id
+      if (messageId) {
+        await transport.edit(channelId, messageId, decidedApprovalPayload(decision))
+      }
+    } catch (error) {
+      logger.warn('更新确认卡片失败:', error?.message || String(error))
+    }
+    await transport
+      .replyEphemeral(interaction, approved ? '已批准。' : '已拒绝。')
+      .catch(() => undefined)
+    return true
+  }
+
+  /**
    * "停止" button on a streaming card.
    *
    * The custom_id carries the card message id; the conversation key is that
@@ -739,7 +830,9 @@ export function apply(ctx, rawConfig = {}) {
    */
   async function handleButton(interaction) {
     const customId = String(interaction?.customId || '')
-    if (!customId.startsWith(STOP_BUTTON_PREFIX)) return false
+    if (!customId.startsWith(STOP_BUTTON_PREFIX)) {
+      return handleApprovalButton(interaction, customId)
+    }
     const channelId = interaction.channelId
     const messageId = customId.slice(STOP_BUTTON_PREFIX.length)
     const guildId = interaction.guildId || undefined
@@ -974,12 +1067,50 @@ export function apply(ctx, rawConfig = {}) {
     cleanupTimer.unref?.()
   }
 
+  /**
+   * Post a confirmation card and await the operator's decision.
+   *
+   * Used by the bridge (and available to other host-plane code) before a
+   * sensitive action runs. Resolves to 'approved' | 'rejected' | 'timeout';
+   * it never rejects, so a caller can treat a timeout as a refusal.
+   */
+  async function requestApproval({ channelId, userId, description, title, footer } = {}) {
+    if (!channelId) return 'timeout'
+    const request = approvals.create({ channelId, userId, description })
+    try {
+      const payload = approvalPayload({
+        requestId: request.id,
+        title,
+        description,
+        footer,
+        expiresAt: request.expiresAt,
+      })
+      const sent = await transport.send(channelId, payload)
+      audit.record({
+        category: 'discord',
+        action: 'approval.request',
+        status: 'ok',
+        channelId,
+        conversation: channelId,
+        userId,
+        detail: { requestId: request.id, messageId: sent?.messageId },
+      })
+      return await request.decided
+    } catch (error) {
+      approvals.finish(request.id, 'timeout')
+      logger.warn('发送确认卡片失败:', error?.message || String(error))
+      return 'timeout'
+    }
+  }
+
   ctx.effect(
     () => () => {
       if (disposed) return
       disposed = true
       if (cleanupTimer) clearInterval(cleanupTimer)
       return (async () => {
+        // Settle any awaited confirmation so no turn hangs on shutdown.
+        approvals.clear('timeout')
         await Promise.allSettled([agents.dispose(), transport.stop(), state.close(), audit.close()])
         logger.log('插件卸载，Discord 连接和 Agent 已释放')
       })()

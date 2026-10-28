@@ -225,6 +225,23 @@ DSH_DISCORD_AGENT_PRESET=standard
 | `/dsh system` | `help` | 帮助 |
 | | `ping` | WebSocket/处理延迟 |
 | | `audit` | 查看当前频道最近操作记录 |
+| | `confirm <动作>` | 发送批准/拒绝卡片并等待决定 |
+
+## 批准/拒绝按钮
+
+敏感操作可以挂一次人工确认。发出确认卡片后带两个按钮：
+
+| 按钮 | 样式 | 结果 |
+|---|---|---|
+| ✅ 批准 | 绿色 | `approved` |
+| 🚫 拒绝 | 红色 | `rejected` |
+
+发起方 `await` 这个决定（`approved` / `rejected` / `timeout`），永不抛错，
+所以超时可以直接当拒绝处理。未处理的卡片 5 分钟后失效，决定后按钮会被移除；
+重复点击只会提示"已失效或已处理"，不会二次决策。
+
+两个按钮走与其它命令相同的鉴权，每次决定都写入审计日志
+（`button.approve` / `button.reject`）。
 
 ## DeepSeek 官方 REST API 命令组
 
