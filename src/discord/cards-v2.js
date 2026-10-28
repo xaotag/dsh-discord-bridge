@@ -229,14 +229,26 @@ export function approvalCard({
   })
 }
 
-/** Same card after a decision, with the buttons removed. */
+/**
+ * Same card after a decision, with the buttons removed.
+ *
+ * `decision` covers the three terminal states a request can reach:
+ * approved / rejected / denied. `denied` means the operator approved but the
+ * system refused — a permission or policy failure rather than a human choice.
+ */
 export function decidedApprovalCard(decision, { title, description } = {}) {
-  const approved = decision === 'approved'
+  const state = APPROVAL_STATES[decision] ?? APPROVAL_STATES.rejected
   return cardPayload({
-    accentColor: approved ? ACCENT.completed : ACCENT.cancelled,
-    title: title || (approved ? '✅ 已批准' : '🚫 已拒绝'),
-    body: description || (approved ? '操作已批准。' : '操作已拒绝。'),
+    accentColor: state.accent,
+    title: title || state.title,
+    body: description || state.body,
   })
+}
+
+export const APPROVAL_STATES = {
+  approved: { title: '✅ 已批准', accent: ACCENT.completed, body: '操作已批准。' },
+  rejected: { title: '🚫 已拒绝', accent: ACCENT.cancelled, body: '操作已拒绝。' },
+  denied: { title: '⛔ 无权限', accent: ACCENT.failed, body: '已批准，但系统拒绝了该操作。' },
 }
 
 /** Attach a stop button row to a card payload. */

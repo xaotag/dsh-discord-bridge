@@ -904,3 +904,44 @@ test('inlineToolLines elides the oldest entries past the line cap', async () => 
   const rows = out.split('\n').filter((l) => l.includes('`t'))
   assert.equal(rows.length, 12)
 })
+
+test('privilege outcome distinguishes approval from system refusal', async () => {
+  const { classifyPrivilegedOutcome, describePrivilegedOutcome, looksLikePermissionDenial } =
+    await import('../src/bridge/privilege-outcome.js')
+
+  assert.equal(classifyPrivilegedOutcome({ status: 'ok', exitCode: 0 }), 'approved')
+  assert.equal(classifyPrivilegedOutcome({ status: 'denied', message: 'bad sig' }), 'denied')
+  // Policy/kernel refusals are reported as denied, not a plain failure.
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'avc:  denied  { read }' }), 'denied')
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'Permission denied' }), 'denied')
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'Access denied' }), 'denied')
+  assert.equal(
+    classifyPrivilegedOutcome({ status: 'error', stderr: 'Interactive authentication required.' }),
+    'denied',
+  )
+  // An ordinary failure is neither an approval nor a permission problem.
+  assert.equal(classifyPrivilegedOutcome({ status: 'error', stderr: 'no such file' }), 'failed')
+
+  assert.match(describePrivilegedOutcome({ status: 'ok', exitCode: 0 }), /已执行/)
+  assert.match(describePrivilegedOutcome({ status: 'error', stderr: 'Permission denied' }), /系统拒绝/)
+  assert.equal(looksLikePermissionDenial({ stderr: 'EACCES' }), true)
+})
+
+test('selinuxHint only appears for an AVC denial', async () => {
+  const { selinuxHint } = await import('../src/bridge/privilege-outcome.js')
+  assert.equal(selinuxHint({ stderr: 'Permission denied' }), undefined)
+  const hint = selinuxHint({ stderr: 'type=AVC msg=audit(1): avc:  denied  { read } for pid=1' })
+  assert.match(hint, /SELinux/, 'names the mechanism')
+  assert.match(hint, /ausearch/, 'explains how to inspect it')
+})
+
+test('decidedApprovalCard renders the denied state', async () => {
+  const { decidedApprovalCard } = await import('../src/discord/cards-v2.js')
+  const denied = decidedApprovalCard('denied')
+  const texts = flattenTexts(denied.components).join('\n')
+  assert.match(texts, /无权限/)
+  const approved = flattenTexts(decidedApprovalCard('approved').components).join('\n')
+  assert.match(approved, /已批准/)
+  const rejected = flattenTexts(decidedApprovalCard('rejected').components).join('\n')
+  assert.match(rejected, /已拒绝/)
+})

@@ -7,7 +7,8 @@ import {
   Routes,
 } from 'discord.js'
 import { DiscordRateLimiter } from './rate-limiter.js'
-import { normalizePayload, notificationPayload } from './renderer.js'
+import { normalizePayload } from './renderer.js'
+import { noticeCard } from './cards-v2.js'
 
 /** Discord interaction/transport module. It knows nothing about LLM or DSH Agents. */
 export class DiscordTransport {
@@ -193,7 +194,7 @@ export class DiscordTransport {
         userId: interaction.user?.id,
         detail: { contentLength: String(text || '').length },
       },
-      () => interaction.editReply({ ...notificationPayload(text) }),
+      () => interaction.editReply(normalizePayload(noticeCard(text))),
     )
   }
 
@@ -202,7 +203,10 @@ export class DiscordTransport {
       'discord',
       'interaction.followUp',
       { channelId: interaction.channelId, guildId: interaction.guildId || undefined, userId: interaction.user?.id },
-      () => interaction.followUp({ ...notificationPayload(text), ephemeral }),
+      () => {
+        const payload = normalizePayload(noticeCard(text))
+        return interaction.followUp(ephemeral ? { ...payload, flags: payload.flags | (1 << 6) } : payload)
+      },
     )
   }
 
@@ -212,7 +216,10 @@ export class DiscordTransport {
       'discord',
       'interaction.reply',
       { channelId: interaction.channelId, guildId: interaction.guildId || undefined, userId: interaction.user?.id },
-      () => interaction.reply({ ...notificationPayload(text), ephemeral }),
+      () => {
+        const payload = normalizePayload(noticeCard(text))
+        return interaction.reply(ephemeral ? { ...payload, flags: payload.flags | (1 << 6) } : payload)
+      },
     )
   }
 
@@ -235,16 +242,25 @@ export class DiscordTransport {
     )
   }
 
-  /** Ephemeral text answer for a component interaction. */
+  /**
+   * Ephemeral answer for a component interaction.
+   *
+   * The reply must be Components V2: the card being answered already carries
+   * IS_COMPONENTS_V2, and Discord rejects a payload that mixes the legacy
+   * `content` field with that flag
+   * (MESSAGE_CANNOT_USE_LEGACY_FIELDS_WITH_COMPONENTS_V2).
+   */
   async replyEphemeral(interaction, text) {
     await this.withAudit(
       'discord',
       'button.reply',
       { channelId: interaction.channelId, userId: interaction.user?.id, customId: interaction.customId },
-      () =>
-        interaction.deferred || interaction.replied
-          ? interaction.editReply({ ...notificationPayload(text) })
-          : interaction.reply({ ...notificationPayload(text), ephemeral: true }),
+      () => {
+        const payload = normalizePayload(noticeCard(text))
+        return interaction.deferred || interaction.replied
+          ? interaction.editReply(payload)
+          : interaction.reply({ ...payload, flags: payload.flags | (1 << 6) })
+      },
     )
   }
 

@@ -48,6 +48,11 @@ import { DeepSeekApiClient } from './src/deepseek/api-client.js'
 import { ThreadManager, shouldCreateThread } from './src/bridge/thread-manager.js'
 import { ApprovalRegistry } from './src/bridge/approval.js'
 import { PrivilegedClient } from './src/bridge/privileged-client.js'
+import {
+  classifyPrivilegedOutcome,
+  describePrivilegedOutcome,
+  selinuxHint,
+} from './src/bridge/privilege-outcome.js'
 import { AuditLog } from './src/audit/db.js'
 import { UNTRUSTED_INPUT_POLICY } from './src/bridge/untrusted.js'
 
@@ -513,17 +518,24 @@ export function apply(ctx, rawConfig = {}) {
           ...(result.status !== 'ok' ? { error: result.message || result.stderr } : {}),
         })
 
+        // Distinguish "approved and ran" from "approved but the system refused
+        // it" (SELinux, AppArmor, DAC, polkit) so the reply never blames the
+        // command for a policy denial.
+        const outcome = classifyPrivilegedOutcome(result)
         const lines = []
-        if (result.status === 'ok') {
-          lines.push(`✅ 执行完成（退出码 ${result.exitCode ?? 0}，用时 ${elapsed}ms）`)
+        if (outcome === 'approved') {
+          lines.push(`✅ 已批准并执行（退出码 ${result.exitCode ?? 0}，用时 ${elapsed}ms）`)
+        } else if (outcome === 'denied') {
+          lines.push('⛔ 已批准，但无权限执行')
         } else if (result.status === 'timeout') {
           lines.push('⏱ 等待执行结果超时。')
-        } else if (result.status === 'denied') {
-          lines.push('🚫 守护进程拒绝了该请求。')
         } else {
-          lines.push(`❌ 执行失败${result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : ''}`)
+          lines.push('❌ 执行失败')
         }
-        if (result.message) lines.push(result.message)
+        const detail = describePrivilegedOutcome(result)
+        if (detail && outcome !== 'approved') lines.push(detail)
+        const hint = selinuxHint(result)
+        if (hint) lines.push('', hint)
         if (result.stdout?.trim()) {
           lines.push('', '**stdout**', '```', clipForDiscord(result.stdout), '```')
         }
