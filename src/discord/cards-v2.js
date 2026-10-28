@@ -10,6 +10,7 @@
  * Container's `accent_color`, so cards keep their status tint.
  */
 import {
+  CONTAINER_TEXT_LIMIT,
   MAX_TOTAL_COMPONENTS,
   TEXT_DISPLAY_LIMIT,
   TEXT_INPUT_STYLE,
@@ -28,6 +29,9 @@ import {
 } from './components-v2.js'
 import { suppressMentions } from './renderer.js'
 import { adaptMarkdownForTextDisplay } from './markdown.js'
+
+/** Subtext marker for a footer line; counts toward the text budget. */
+const FOOTER_PREFIX = '-# '
 
 /** Status tints, matching the embed palette used elsewhere. */
 export const ACCENT = {
@@ -56,22 +60,38 @@ export function cardPayload({
   emptyText = '（无内容）',
 } = {}) {
   const children = []
-  const cleanTitle = suppressMentions(String(title ?? '')).trim()
-  if (cleanTitle) {
-    children.push(textDisplay(`${'#'.repeat(clampHeading(headingLevel))} ${cleanTitle}`))
+  // Discord caps the *total* displayable text in a container at 4000 characters,
+  // not each Text Display. Budget the title and footer first, then give the body
+  // whatever is left, or a long answer plus its chrome is rejected outright
+  // (COMPONENT_DISPLAYABLE_TEXT_SIZE_EXCEEDED).
+  let budget = CONTAINER_TEXT_LIMIT
+  /** Reserve `prefix`+text against the budget; the prefix counts too. */
+  const take = (text, prefix = '') => {
+    const room = budget - prefix.length
+    if (room <= 0) return ''
+    const clipped = text.length <= room ? text : `${text.slice(0, Math.max(0, room - 1))}…`
+    budget -= prefix.length + clipped.length
+    return clipped
   }
+
+  const headingPrefix = `${'#'.repeat(clampHeading(headingLevel))} `
+  const cleanTitle = take(suppressMentions(String(title ?? '')).trim(), headingPrefix)
+  if (cleanTitle) children.push(textDisplay(`${headingPrefix}${cleanTitle}`))
+
+  // The footer prefix also occupies characters in the container.
+  const cleanFooter = take(suppressMentions(String(footer ?? '')).trim(), FOOTER_PREFIX)
+
   // Text Display renders full Markdown, so only table syntax is rewritten here;
   // headings and nesting are left exactly as the model wrote them.
   const adaptedBody = adaptMarkdownForTextDisplay(String(body ?? ''))
-  const cleanBody = suppressMentions(adaptedBody).trim()
+  const cleanBody = take(suppressMentions(adaptedBody).trim())
   for (const chunk of textChunks(cleanBody || emptyText)) {
     children.push(textDisplay(chunk))
   }
-  const cleanFooter = suppressMentions(String(footer ?? '')).trim()
   if (cleanFooter) {
     children.push(separator({ spacing: 1 }))
     // Subtext is Discord's own small-print style for a footer line.
-    children.push(textDisplay(`-# ${cleanFooter}`))
+    children.push(textDisplay(`${FOOTER_PREFIX}${cleanFooter}`))
   }
   for (const row of rows) if (row) children.push(row)
   return v2Payload([container(children, { accentColor })])

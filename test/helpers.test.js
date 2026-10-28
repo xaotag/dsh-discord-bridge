@@ -1269,3 +1269,40 @@ test('both ask groups resolve their own option name', async () => {
   assert.equal(normalizeInteraction(make('task', 'ask', 'text', '执行任务')).arg, '执行任务')
   assert.equal(normalizeInteraction(make('system', 'ask', 'question', '选哪个？')).arg, '选哪个？')
 })
+
+test('a card never exceeds the 4000-char displayable text budget', async () => {
+  const { finalCard, streamCard } = await import('../src/discord/cards-v2.js')
+  const totalText = (payload) => {
+    const out = []
+    const walk = (nodes) => {
+      for (const node of nodes || []) {
+        if (!node) continue
+        if (node.type === 10) out.push(String(node.content ?? ''))
+        if (node.components) walk(node.components)
+      }
+    }
+    walk(payload.components)
+    return out.join('').length
+  }
+
+  // Discord rejects the whole message when the container's text exceeds 4000,
+  // so the title prefix, footer prefix and body must share one budget.
+  for (const size of [100, 3900, 5000, 20000]) {
+    const card = finalCard('x'.repeat(size), 'completed', {
+      startedAt: Date.now() - 1000,
+      model: 'deepseek-flash',
+      tools: [{ name: 'bash', args: '{}', endedAt: Date.now() }],
+    })
+    assert.ok(totalText(card) <= 4000, `finalCard(${size}) stayed within budget`)
+  }
+  const streamed = streamCard('y'.repeat(9000), { title: '标题', footer: '脚注' })
+  assert.ok(totalText(streamed) <= 4000, 'streamCard stays within budget too')
+})
+
+test('a long body is truncated rather than dropped', async () => {
+  const { finalCard } = await import('../src/discord/cards-v2.js')
+  const card = finalCard('z'.repeat(10000), 'completed', {})
+  const texts = flattenTexts(card.components).join('')
+  assert.match(texts, /z{1000}/, 'the body still has content')
+  assert.match(texts, /…/, 'truncation is marked')
+})
