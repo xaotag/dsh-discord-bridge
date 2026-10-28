@@ -134,11 +134,13 @@ export function downgradeHeadings(text) {
 }
 
 /**
- * Convert a GFM pipe table into an aligned fenced code block, which is the only
- * way Discord renders columns predictably. Wide tables are clipped per column so
- * the block does not wrap badly on mobile.
+ * Convert a GFM pipe table into something Discord renders natively.
+ *
+ * Discord supports no table syntax. Narrow (2-column) tables become bullet
+ * lists that wrap cleanly; wider ones stay in a fenced block whose columns are
+ * padded by display width so CJK text lines up.
  */
-export function convertTables(text, { maxColumnWidth = 24, maxRows = 60 } = {}) {
+export function convertTables(text, { maxColumnWidth = 24, maxRows = 60, asList = true } = {}) {
   const lines = String(text ?? '').split('\n')
   const out = []
   let i = 0
@@ -161,7 +163,7 @@ export function convertTables(text, { maxColumnWidth = 24, maxRows = 60 } = {}) 
         rows.push(splitRow(lines[j]))
         j += 1
       }
-      out.push(renderCodeTable(header, rows, { maxColumnWidth, maxRows }))
+      out.push(renderCodeTable(header, rows, { maxColumnWidth, maxRows, asList }))
       i = j
       continue
     }
@@ -180,26 +182,124 @@ function splitRow(line) {
   return body.split('|').map((cell) => cell.trim())
 }
 
-function renderCodeTable(header, rows, { maxColumnWidth, maxRows }) {
+/**
+ * Display width in monospace cells.
+ *
+ * A CJK ideograph or an emoji occupies two cells, so `String.length` is the
+ * wrong measure for alignment: "名称" is length 2 but renders four cells wide.
+ * Padding by length is what made column tables look ragged.
+ */
+export function displayWidth(text) {
+  let width = 0
+  for (const ch of String(text ?? '')) {
+    width += charWidth(ch.codePointAt(0))
+  }
+  return width
+}
+
+function charWidth(cp) {
+  // Zero-width and combining marks.
+  if (cp === 0x200b || cp === 0x200d || cp === 0xfeff) return 0
+  if (cp >= 0x0300 && cp <= 0x036f) return 0
+  // Wide / fullwidth ranges: CJK, Hangul, Hiragana, Katakana, fullwidth forms.
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0x303e) ||
+    (cp >= 0x3041 && cp <= 0x33ff) ||
+    (cp >= 0x3400 && cp <= 0x4dbf) ||
+    (cp >= 0x4e00 && cp <= 0x9fff) ||
+    (cp >= 0xa000 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    // Emoji presented as width-2 in Discord's monospace cells: dingbats and
+    // misc symbols (✅ ❌ ⚠), plus the pictographic blocks.
+    (cp >= 0x2600 && cp <= 0x27bf) ||
+    (cp >= 0x2b00 && cp <= 0x2bff) ||
+    (cp >= 0x1f300 && cp <= 0x1f64f) ||
+    (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+    (cp >= 0x1f680 && cp <= 0x1f6ff)
+  ) {
+    return 2
+  }
+  return 1
+}
+
+/** Pad to a display width, never splitting a surrogate pair. */
+function padTo(text, width) {
+  const source = String(text ?? '')
+  const current = displayWidth(source)
+  if (current >= width) return source
+  return source + ' '.repeat(width - current)
+}
+
+/** Truncate to a display width, appending an ellipsis when clipped. */
+function clipToWidth(text, width) {
+  const source = String(text ?? '')
+  if (displayWidth(source) <= width) return source
+  let out = ''
+  let used = 0
+  for (const ch of source) {
+    const w = charWidth(ch.codePointAt(0))
+    if (used + w > width - 1) break
+    out += ch
+    used += w
+  }
+  return `${out}…`
+}
+
+/**
+ * Discord has no table syntax at all.
+ *
+ * Two shapes are available, both natively rendered:
+ *
+ *  - 2-column tables read as `- **key** value` lists, which wrap naturally and
+ *    stay readable on mobile.
+ *  - wider tables stay inside a fenced block, where alignment is preserved and
+ *    now measured in display cells so CJK columns line up.
+ */
+function renderCodeTable(header, rows, { maxColumnWidth, maxRows, asList }) {
+  if (asList && header.length === 2) return renderListTable(header, rows, maxRows)
+
   const columns = Math.max(header.length, ...rows.map((r) => r.length))
   const widths = []
   for (let c = 0; c < columns; c += 1) {
     const candidates = [header[c] ?? '', ...rows.map((r) => r[c] ?? '')]
-    const longest = Math.max(...candidates.map((cell) => cell.length), 1)
+    const longest = Math.max(...candidates.map((cell) => displayWidth(cell)), 1)
     widths[c] = Math.min(longest, maxColumnWidth)
   }
-  const fit = (cell, width) => {
-    const text = String(cell ?? '')
-    return text.length <= width ? text.padEnd(width) : `${text.slice(0, Math.max(1, width - 1))}…`
-  }
+  const fit = (cell, width) => padTo(clipToWidth(cell, width), width)
+
   const body = []
-  body.push(header.map((cell, c) => fit(cell, widths[c])).join(' | ').trimEnd())
-  body.push(widths.map((w) => '-'.repeat(w)).join('-+-'))
+  body.push(header.map((cell, c) => fit(cell, widths[c])).join(' │ ').trimEnd())
+  body.push(widths.map((w) => '─'.repeat(w)).join('─┼─'))
   for (const row of rows.slice(0, maxRows)) {
-    body.push(row.map((cell, c) => fit(cell, widths[c])).join(' | ').trimEnd())
+    body.push(row.map((cell, c) => fit(cell, widths[c])).join(' │ ').trimEnd())
   }
   if (rows.length > maxRows) body.push(`… (+${rows.length - maxRows} rows)`)
   return `${FENCE}text\n${body.join('\n')}\n${FENCE}`
+}
+
+/** `| key | value |` renders as a bullet list Discord wraps correctly. */
+function renderListTable(header, rows, maxRows) {
+  const [keyTitle, valueTitle] = header
+  const lines = []
+  // Subtext (the `-#` prefix) is Discord's own small-print style; it reads as a
+  // caption rather than a heading, which is what a table header is here.
+  if (keyTitle || valueTitle) {
+    const caption = [keyTitle, valueTitle].filter(Boolean).join(' · ')
+    lines.push(`-# ${caption}`)
+  }
+  for (const row of rows.slice(0, maxRows)) {
+    const key = String(row[0] ?? '').trim()
+    const value = String(row[1] ?? '').trim()
+    if (!key && !value) continue
+    lines.push(`- **${key}**：${value}`)
+  }
+  if (rows.length > maxRows) lines.push(`-# …另有 ${rows.length - maxRows} 行`)
+  return lines.join('\n')
 }
 
 /** `- [ ] task` → `- ☐ task`, `- [x] done` → `- ☑ done`. */

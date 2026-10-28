@@ -157,6 +157,25 @@ an intent field (`description`, `summary`, `label`, `title`, `reason`, `purpose`
 shown after the name; otherwise the line is just the tool name. Argument values —
 commands, paths, URLs, patterns, prompts — are never rendered.
 
+### Markdown adaptation
+
+Discord is **not** a Markdown renderer: it supports a subset, and embed
+descriptions support less than plain message content. Everything written into an
+embed is adapted first:
+
+| Source | Becomes | Why |
+|---|---|---|
+| `# Heading` | `**Heading**` | Embeds do not render ATX headings; the `#` shows literally |
+| 2-column table | `-# header` + `- **key**: value` | Discord has no table syntax; a list wraps naturally |
+| 3+ column table | fenced code block | Column alignment needs monospace; padded by **display width** |
+| `- [ ]` / `- [x]` | `☐` / `☑` | Checkbox glyphs |
+| Deep list nesting | flattened to two levels | Nested indentation collapses in embeds |
+| Code block content | untouched | Never rewritten |
+
+The important detail: column widths come from `displayWidth()`, which counts CJK
+characters and emoji as **two cells**. Padding by `String.length` is exactly what
+made CJK columns misalign before.
+
 ## Thread isolation
 
 Complex tasks in guild text channels (long text, attachments, keywords, or over the

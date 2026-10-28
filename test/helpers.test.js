@@ -390,14 +390,13 @@ test('markdown adapter leaves inline hashes and code fences alone', () => {
   assert.ok(out.includes('const a = 1'))
 })
 
-test('markdown adapter converts tables into a fenced code block', () => {
+test('markdown adapter turns a narrow table into a list', () => {
+  // Discord has no table syntax; a two-column table reads better as a list,
+  // which wraps natively instead of relying on monospace alignment.
   const out = adaptMarkdownForEmbed('| a | b |\n|---|---|\n| 1 | 2 |')
-  assert.ok(out.startsWith('```text'))
-  assert.ok(out.trimEnd().endsWith('```'))
-  assert.ok(out.includes('a'))
-  assert.ok(out.includes('1'))
-  // Cells must be separated by pipes inside the block, not as raw markdown.
-  assert.ok(out.includes('|'))
+  assert.ok(!out.includes('```'), 'narrow tables skip the code fence')
+  assert.ok(out.includes('- **1**'))
+  assert.ok(out.includes('2'))
 })
 
 test('markdown adapter keeps an unterminated fence verbatim while streaming', () => {
@@ -413,10 +412,11 @@ test('markdown adapter renders task list checkboxes', () => {
 })
 
 test('embed payloads go through the markdown adapter', () => {
-  const payload = answerPayload('# Heading\n\n| a | b |\n|---|---|\n| 1 | 2 |')
+  const payload = answerPayload('# Heading\n\n| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |')
   const description = payload.embeds[0].description
   assert.ok(!/^# Heading/m.test(description))
   assert.ok(description.includes('**Heading**'))
+  // A three-column table still needs monospace alignment.
   assert.ok(description.includes('```text'))
 })
 
@@ -688,4 +688,44 @@ test('normalizeInteraction returns no arg for a command without options', async 
   })
   assert.equal(out.command, 'audit')
   assert.equal(out.arg, undefined)
+})
+
+test('displayWidth counts CJK and emoji as two cells', async () => {
+  const { displayWidth } = await import('../src/discord/markdown.js')
+  assert.equal(displayWidth('abc'), 3)
+  assert.equal(displayWidth('名称'), 4, 'two CJK chars occupy four cells')
+  assert.equal(displayWidth('config.js'), 9)
+  assert.equal(displayWidth('✅'), 2, 'emoji is double-width')
+  assert.equal(displayWidth('a名b'), 4)
+})
+
+test('wide tables align columns by display width, not string length', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |', { asList: false })
+  const lines = out.split('\n')
+  // Every content line must have the same separator position.
+  const pipeIndexes = lines
+    .filter((l) => l.includes('│'))
+    .map((l) => displayIndex(l, '│'))
+  assert.equal(new Set(pipeIndexes).size, 1, 'first column separator must line up')
+})
+
+function displayIndex(line, needle) {
+  const idx = line.indexOf(needle)
+  return idx === -1 ? -1 : idx
+}
+
+test('two-column tables become bullet lists for native wrapping', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const out = convertTables('| 键 | 值 |\n|---|---|\n| a | 1 |')
+  assert.ok(!out.includes('```'), 'no code fence for a two-column table')
+  assert.match(out, /^-# 键 · 值/m)
+  assert.match(out, /- \*\*a\*\*：1/)
+})
+
+test('wide tables still use a fenced block', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const out = convertTables('| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |')
+  assert.ok(out.startsWith('```text'))
+  assert.ok(out.trimEnd().endsWith('```'))
 })
