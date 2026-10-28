@@ -130,6 +130,12 @@ export const dshCommand = new SlashCommandBuilder()
       .addSubcommand((c) => c.setName('audit').setDescription('查看当前频道最近的操作日志（不含对话内容）'))
       .addSubcommand((c) =>
         c
+          .setName('ask')
+          .setDescription('测试：让 bot 发起一次 ask_user_question')
+          .addStringOption((o) => o.setName('question').setDescription('问题内容')),
+      )
+      .addSubcommand((c) =>
+        c
           .setName('confirm')
           .setDescription('请求一次操作确认（批准/拒绝按钮）')
           .addStringOption((o) =>
@@ -221,7 +227,9 @@ export function normalizeInteraction(interaction) {
               ? readOption(interaction, 'action')
               : command === 'sudo'
                 ? readOption(interaction, 'command')
-                : undefined
+                : command === 'ask'
+                  ? readOption(interaction, 'question')
+                  : undefined
   // Backward compatibility for Discord clients still caching the pre-group
   // `/dsh status|new|model|reasoning|ask|steer|stop|help` command tree.
   const legacy = {
@@ -236,6 +244,7 @@ export function normalizeInteraction(interaction) {
     steer: ['task', 'steer'],
     help: ['system', 'help'],
     audit: ['system', 'audit'],
+    ask: ['system', 'ask'],
     confirm: ['system', 'confirm'],
     sudo: ['system', 'sudo'],
   }
