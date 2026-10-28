@@ -455,6 +455,92 @@ export function apply(ctx, rawConfig = {}) {
         }
         return
       }
+      /**
+       * Demo approvals: real registry entries, so the buttons really resolve.
+       *
+       * The cards are posted by the plugin process, which is the only place the
+       * in-memory registry exists — a card sent from elsewhere would always
+       * report "already handled".
+       */
+      case 'system/demo': {
+        const channelIdForApproval = target.channelId || channelId
+        const demos = [
+          {
+            title: '🧪 演示 A：普通确认',
+            description: '点**批准**或**拒绝**，卡片会立即变成对应状态。',
+            footer: '真实注册，点击有回调',
+          },
+          {
+            title: '🧪 演示 B：SELinux 拒绝',
+            description: [
+              '批准后**故意**按 SELinux 拒绝处理，展示 denied 状态。',
+              '',
+              '```bash',
+              'cat /etc/shadow',
+              '```',
+            ].join('\n'),
+            footer: '模拟 AVC 拒绝，不会真的执行',
+            simulate: 'selinux',
+          },
+          {
+            title: '🧪 演示 C：执行成功',
+            description: ['批准后以 root 执行 `id -u`。', '', '```bash', 'id -u', '```'].join('\n'),
+            footer: '真实执行',
+            simulate: 'run',
+          },
+        ]
+
+        for (const demo of demos) {
+          const decision = await requestApproval({
+            channelId: channelIdForApproval,
+            userId: commandUserId,
+            title: demo.title,
+            description: demo.description,
+            footer: demo.footer,
+          })
+          if (decision !== 'approved') {
+            await respond(target, decision === 'timeout' ? '⏱ 演示 A 已超时。' : '🚫 演示已拒绝。', {
+              replyToMessageId,
+            })
+            continue
+          }
+          if (demo.simulate === 'selinux') {
+            // A realistic AVC record, so the classifier and summariser are
+            // exercised without touching the host's SELinux policy.
+            const denial = {
+              status: 'error',
+              exitCode: 13,
+              stderr:
+                'type=AVC msg=audit(1793192000.123:456): avc:  denied  { read } for  pid=12345 comm="cat" name="shadow" dev="sda1" ino=1234567 scontext=system_u:system_r:unconfined_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0',
+            }
+            const lines = ['⛔ 已批准，但无权限执行', describePrivilegedOutcome(denial)]
+            const hint = selinuxHint(denial)
+            if (hint) lines.push('', hint)
+            await respond(target, lines.join('\n'), { replyToMessageId })
+            continue
+          }
+          if (demo.simulate === 'run') {
+            const result = await privileged.run({
+              command: 'id -u',
+              requestedBy: commandUserId,
+              channelId: channelIdForApproval,
+            })
+            const outcome = classifyPrivilegedOutcome(result)
+            await respond(
+              target,
+              [
+                outcome === 'approved'
+                  ? `✅ 已批准并执行\n\`\`\`\n${(result.stdout || '').trim() || '(无输出)'}\n\`\`\``
+                  : `⛔ ${describePrivilegedOutcome(result)}`,
+              ].join('\n'),
+              { replyToMessageId },
+            )
+            continue
+          }
+          await respond(target, '✅ 演示完成：批准已生效。', { replyToMessageId })
+        }
+        return
+      }
       case 'system/sudo': {
         const command = String(arg || '').trim()
         if (!command) {
