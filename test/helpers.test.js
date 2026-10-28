@@ -833,3 +833,31 @@ test('long bodies split across text displays without breaking surrogates', async
   for (const chunk of chunks) assert.ok(chunk.length <= TEXT_DISPLAY_LIMIT)
   assert.equal(chunks.join(''), body, 'no content lost when splitting')
 })
+
+test('every module resolves its named imports (catches missing exports)', async () => {
+  // `node --check` only validates syntax: a named import that the target module
+  // does not export still passes, and only blows up when the plugin loads.
+  // Importing each module here makes that failure show up in the test run.
+  const modules = [
+    '../src/discord/cards-v2.js',
+    '../src/discord/components-v2.js',
+    '../src/discord/markdown.js',
+    '../src/discord/renderer.js',
+    '../src/bridge/stream-reporter.js',
+    '../src/bridge/approval.js',
+    '../src/bridge/privileged-client.js',
+    '../src/bridge/privileged-protocol.js',
+  ]
+  for (const specifier of modules) {
+    await assert.doesNotReject(
+      () => import(specifier),
+      `${specifier} must import cleanly (missing named export?)`,
+    )
+  }
+})
+
+test('index.js loads, so the plugin entry has no unresolved imports', async () => {
+  const mod = await import('../index.js')
+  assert.equal(mod.name, 'dsh-discord-bridge')
+  assert.equal(typeof mod.apply, 'function')
+})
