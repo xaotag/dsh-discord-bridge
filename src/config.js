@@ -23,6 +23,19 @@ function nonEmpty(value) {
   return trimmed.length === 0 ? undefined : trimmed
 }
 
+/**
+ * Resolve a user-supplied path. `path.resolve` does not expand `~`, so a
+ * documented `~/.dsh/...` value would otherwise create a literal `~` directory
+ * relative to the process cwd.
+ */
+function resolveUserPath(value) {
+  const raw = nonEmpty(value)
+  if (!raw) return undefined
+  if (raw === '~') return os.homedir()
+  if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2))
+  return path.resolve(raw)
+}
+
 function positiveNumber(value, fallback) {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : fallback
@@ -70,11 +83,10 @@ export function resolveConfig(raw = {}) {
   const isolation = ['channel', 'user-channel', 'user', 'guild-user'].includes(requestedIsolation)
     ? requestedIsolation
     : 'channel'
-  const statePath = path.resolve(
-    nonEmpty(raw.statePath) ||
-      nonEmpty(process.env.DSH_DISCORD_STATE) ||
-      path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-discord', 'state.json'),
-  )
+  const statePath =
+    resolveUserPath(raw.statePath) ||
+    resolveUserPath(process.env.DSH_DISCORD_STATE) ||
+    path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-discord', 'state.json')
   return {
     tokenRef:
       nonEmpty(raw.tokenRef) || nonEmpty(process.env.DSH_DISCORD_TOKEN_REF) || 'DISCORD_BOT_TOKEN',
@@ -88,11 +100,10 @@ export function resolveConfig(raw = {}) {
     ),
     statePath,
     auditEnabled: boolValue(raw.auditEnabled ?? process.env.DSH_DISCORD_AUDIT, true),
-    auditPath: path.resolve(
-      nonEmpty(raw.auditPath) ||
-        nonEmpty(process.env.DSH_DISCORD_AUDIT_DB) ||
-        path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-discord', 'audit.sqlite'),
-    ),
+    auditPath:
+      resolveUserPath(raw.auditPath) ||
+      resolveUserPath(process.env.DSH_DISCORD_AUDIT_DB) ||
+      path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-discord', 'audit.sqlite'),
     requireMention: boolValue(raw.requireMention ?? process.env.DSH_DISCORD_REQUIRE_MENTION, true),
     registerCommands: boolValue(
       raw.registerCommands ?? process.env.DSH_DISCORD_REGISTER_COMMANDS,

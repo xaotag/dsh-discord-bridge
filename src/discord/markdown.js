@@ -27,7 +27,7 @@ const FENCE = '```'
 export function adaptMarkdownForEmbed(text) {
   const source = String(text ?? '')
   if (!source) return ''
-  return mapOutsideCode(source, (segment) => {
+  const converted = mapOutsideCode(source, (segment) => {
     let out = segment
     out = convertTables(out)
     out = convertTaskLists(out)
@@ -35,6 +35,53 @@ export function adaptMarkdownForEmbed(text) {
     out = flattenDeepNesting(out)
     return out
   })
+  return wrapLongCodeLines(converted)
+}
+
+/**
+ * Soft-wrap over-long lines inside fenced code blocks.
+ *
+ * A phone shows roughly 40 monospace characters per line; a 200-char command
+ * or an ASCII "before/after" diagram pushed Discord into horizontal scrolling
+ * and the surrounding text broke apart. Wrapping keeps every block inside the
+ * viewport at the cost of some alignment.
+ */
+export const CODE_LINE_WIDTH = 88
+
+export function wrapLongCodeLines(text, width = CODE_LINE_WIDTH) {
+  const lines = String(text ?? '').split('\n')
+  const out = []
+  let inFence = false
+  for (const line of lines) {
+    if (line.trimStart().startsWith(FENCE)) {
+      inFence = !inFence
+      out.push(line)
+      continue
+    }
+    if (!inFence || line.length <= width) {
+      out.push(line)
+      continue
+    }
+    for (const wrapped of wrapLine(line, width)) out.push(wrapped)
+  }
+  return out.join('\n')
+}
+
+/** Break one line into width-sized pieces, keeping the original indent. */
+function wrapLine(line, width) {
+  const indent = (line.match(/^[ 	]*/) || [''])[0]
+  const continuation = ' '.repeat(Math.min(indent.length, 8))
+  const pieces = []
+  let rest = line
+  while (rest.length > width) {
+    // Prefer a space so commands break at word boundaries when possible.
+    let cut = rest.lastIndexOf(' ', width)
+    if (cut < Math.floor(width * 0.5)) cut = width
+    pieces.push(rest.slice(0, cut))
+    rest = continuation + rest.slice(cut).replace(/^\s+/, '')
+  }
+  pieces.push(rest)
+  return pieces
 }
 
 /**

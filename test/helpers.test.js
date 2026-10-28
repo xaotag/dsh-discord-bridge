@@ -248,16 +248,16 @@ test('tool calls stay as cards in their own message, one embed per call', async 
   assert.match(toolEdit.payload.embeds[1].description, /read/)
   assert.match(toolEdit.payload.embeds[0].footer.text, /用时/)
 
-  // Each result opens a fresh, EMPTY answer card instead of overwriting tool
-  // history (pre-call text must not be repeated on the new card).
-  const answerSends = transport.calls.sends.filter((p) => p.embeds?.[0]?.title === '⏳ 正在生成…')
-  assert.equal(answerSends.length >= 1, true)
-  assert.equal(answerSends.at(-1).embeds[0].description, '（等待模型输出…）')
+  // A turn owns exactly ONE answer card however many tools it calls: earlier
+  // versions opened a new card per result and left one-word fragments behind.
+  const answerCardSends = transport.calls.sends.filter((p) => p.embeds?.[0]?.title === '⏳ 正在生成…')
+  assert.equal(answerCardSends.length, 0, 'tool results must not spawn extra answer cards')
+  assert.equal(transport.calls.sends.length, 2, 'only the placeholder and the tool message are sent')
 
-  // Text that arrives after a call goes to the card opened by its result.
+  // Text after the calls keeps flowing into the original answer card.
   reporter.onTextDelta('after the tools')
   await reporter.flush(true)
-  assert.equal(transport.calls.edits.at(-1).messageId, reporter.messageId)
+  assert.equal(transport.calls.edits.at(-1).messageId, 'm1')
   assert.equal(transport.calls.edits.at(-1).payload.embeds[0].description, 'after the tools')
 
   await reporter.finish('done', 'completed')
@@ -413,4 +413,23 @@ test('embed payloads go through the markdown adapter', () => {
   assert.ok(!/^# Heading/m.test(description))
   assert.ok(description.includes('**Heading**'))
   assert.ok(description.includes('```text'))
+})
+
+test('config expands ~ in audit and state paths', async () => {
+  const { resolveConfig } = await import('../src/config.js')
+  const os = await import('node:os')
+  const home = os.homedir()
+  const cfg = resolveConfig({
+    auditPath: '~/.dsh/dsh-discord/audit.sqlite',
+    statePath: '~/state.json',
+  })
+  assert.equal(cfg.auditPath, `${home}/.dsh/dsh-discord/audit.sqlite`)
+  assert.equal(cfg.statePath, `${home}/state.json`)
+  // A literal '~' directory must never appear in the resolved path.
+  assert.ok(!cfg.auditPath.includes('/~'))
+})
+
+test('config keeps absolute audit paths as-is', async () => {
+  const { resolveConfig } = await import('../src/config.js')
+  assert.equal(resolveConfig({ auditPath: '/var/data/a.sqlite' }).auditPath, '/var/data/a.sqlite')
 })

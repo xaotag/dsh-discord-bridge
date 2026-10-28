@@ -148,8 +148,49 @@ export function placeholderPayload(text = '⏳ 已接收，正在处理…') {
   return toPayload(buildEmbed({ color: EMBED_COLORS.thinking, description: text }))
 }
 
-/** A single tool-call card, kept in the transcript after the call finishes. */
-export function toolEmbed({ name, args, startedAt, endedAt } = {}) {
+/** Arguments longer than this collapse to a one-line summary. */
+export const TOOL_ARGS_INLINE_LIMIT = 80
+export const TOOL_ARGS_SUMMARY_LIMIT = 60
+
+/**
+ * Turn a raw tool-argument blob into a single readable line.
+ *
+ * A bash command or file body can be thousands of characters; printing it in
+ * full turns one turn into a wall of text. The card keeps the tool name plus a
+ * compact hint: the most descriptive field, or a truncated preview.
+ */
+export function summarizeToolArgs(args) {
+  const raw = String(args ?? '').trim()
+  if (!raw || raw === '{}') return ''
+  if (raw.length <= TOOL_ARGS_INLINE_LIMIT) return raw.replace(/\s+/g, ' ')
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return clipOneLine(raw, TOOL_ARGS_SUMMARY_LIMIT)
+  }
+  const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined
+  if (record) {
+    // Prefer the field that names what the call actually does.
+    for (const key of ['description', 'command', 'path', 'file_path', 'pattern', 'query', 'prompt']) {
+      const value = record[key]
+      if (typeof value === 'string' && value.trim()) {
+        return clipOneLine(value, TOOL_ARGS_SUMMARY_LIMIT)
+      }
+    }
+    const keys = Object.keys(record)
+    return keys.length ? clipOneLine(keys.join(', '), TOOL_ARGS_SUMMARY_LIMIT) : ''
+  }
+  return clipOneLine(raw, TOOL_ARGS_SUMMARY_LIMIT)
+}
+
+/**
+ * A single tool-call card, kept in the transcript after the call finishes.
+ *
+ * Arguments are folded into one line by default so a long agent turn stays
+ * readable on a phone; pass showArgs: 'full' to print them verbatim.
+ */
+export function toolEmbed({ name, args, startedAt, endedAt, showArgs = 'summary' } = {}) {
   const meta = []
   if (startedAt) {
     const clock = new Date(startedAt).toLocaleTimeString('zh-CN', { hour12: false })
@@ -159,10 +200,19 @@ export function toolEmbed({ name, args, startedAt, endedAt } = {}) {
     const took = formatDuration(endedAt - startedAt)
     if (took) meta.push(`用时 ${took}`)
   }
-  const description = [
-    `💰 **工具**：\`${clipOneLine(name, 120) || 'unknown'}\``,
-    `**参数**：\`${clipOneLine(args || '{}', 900) || '{}'}\``,
-  ].join('\n')
+  const summary = summarizeToolArgs(args)
+  const label = clipOneLine(name, 120) || 'unknown'
+  let description
+  if (showArgs === 'full') {
+    description = [
+      `💰 **工具**：\`${label}\``,
+      `**参数**：\`${clipOneLine(args || '{}', 900) || '{}'}\``,
+    ].join('\n')
+  } else {
+    description = summary
+      ? `💰 **${label}** · \`${summary}\``
+      : `💰 **${label}**`
+  }
   return {
     color: EMBED_COLORS.working,
     title: '🛠 工具调用',

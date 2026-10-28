@@ -102,23 +102,20 @@ export class StreamReporter {
   /**
    * A call started: it becomes the running card until onToolResult.
    *
-   * Pending text is flushed synchronously into the current card *before* the
-   * tool message is created, so the message order stays answer -> tools ->
-   * next answer. The text buffer is then cleared: everything up to here has
-   * been rendered and must not leak into the card opened after the call.
+   * The answer card is NOT split here. One turn owns exactly one answer card
+   * and one tool message, however many calls it makes: the text keeps
+   * accumulating in a single card, and the tool run renders beside it. Earlier
+   * versions opened a new answer card per tool result, which left one-word
+   * cards scattered through the channel.
    */
   onToolCall(name, args) {
     if (this.closed) return
+    // Persist whatever text exists so far before the tool card appears.
     if (this.text.trim() || this.showReasoning) {
-      const payload = this.buildAnswerPayload()
-      if (this.messageId) {
-        void this.transport
-          .edit(this.channelId, this.messageId, payload)
-          .catch((error) => this.logger.warn?.('工具前文案落盘失败:', error?.message || String(error)))
-      }
+      void this.flush(true).catch((error) =>
+        this.logger.warn?.('工具前文案落盘失败:', error?.message || String(error)),
+      )
     }
-    this.text = ''
-    this.reasoning = ''
     this.tools.push({
       name: name || 'unknown',
       args: args || '{}',
@@ -134,9 +131,9 @@ export class StreamReporter {
   }
 
   /**
-   * A call finished. Its card is kept (only stamped with its duration) and a
-   * fresh answer card is opened after the tool run, so the following text does
-   * not overwrite the tool history.
+   * A call finished. Its card is kept (only stamped with its duration); the
+   * answer card continues to be edited in place, so a turn never leaves orphan
+   * fragments behind.
    */
   onToolResult() {
     if (this.closed) return
@@ -149,22 +146,6 @@ export class StreamReporter {
     void this.flushTools().catch((error) =>
       this.logger.warn?.('工具卡片编辑失败:', error?.message || String(error)),
     )
-    void this.openAnswerCard().catch((error) =>
-      this.logger.warn?.('新答案卡片创建失败:', error?.message || String(error)),
-    )
-  }
-
-  /**
-   * Start a new answer card below the tool run. The text deltas that arrived
-   * before the call belong to the previous block, so the new card starts empty
-   * instead of inheriting them.
-   */
-  async openAnswerCard() {
-    if (this.closed) return
-    const sent = await this.transport.send(this.channelId, this.buildAnswerPayload())
-    this.messageId = sent.messageId
-    this.stopButtonId = undefined
-    this.lastEditAt = 0
   }
 
   /** Footer/status caption describing what the Agent is doing right now. */
