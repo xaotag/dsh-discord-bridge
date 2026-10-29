@@ -133,11 +133,11 @@ Inspect the current channel's recent operations from Discord:
 /dsh system audit
 ```
 
-## Streaming and UI behavior (Embed cards)
+## Streaming and UI behavior (Components V2 cards)
 
-All conversational messages are rendered as **Discord Embed cards** instead of plain text.
+All conversational messages are rendered as **Components V2 cards** — a Container with Text Displays, Separators and Action Rows. The legacy `content` and `embeds` fields are not used.
 
-| Card | Title | Color | Content |
+| Card | Title | Accent | Content |
 |---|---|---|---|
 | Placeholder / answer (streaming) | `⏳ Generating…` | Blue `#5865F2` | Aggregating assistant text |
 | Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call inside a code block: `✓ bash  description` |
@@ -149,7 +149,7 @@ All conversational messages are rendered as **Discord Embed cards** instead of p
 
 Tool calls are separated from the answer card: the whole run collapses into a single
 list card — one line per call, `⟳` while running and `✓` once finished — so a turn
-with many calls stays readable instead of stacking near-identical embeds. The answer
+with many calls stays readable instead of stacking near-identical cards. The answer
 card is edited in place, so history is not lost on long tasks.
 
 Tool calls are **interleaved into the body at the point they occurred** (each call
@@ -175,12 +175,33 @@ exactly as written; only syntax Discord lacks at all is converted:
 |---|---|---|
 | `# Heading` | **kept verbatim** | Text Display renders ATX headings |
 | Lists / nesting | **kept verbatim** | Text Display supports nested indentation |
-| Tables | one record per block inside a fence | **No** Discord surface has table syntax; padding columns drifts with CJK |
+| Tables | `a \| b` lines, header bolded | **No** Discord surface has table syntax; padding columns drifts with CJK |
 | Code block content | untouched | Never rewritten |
 
-The important detail: column widths come from `displayWidth()`, which counts CJK
-characters and emoji as **two cells**. Padding by `String.length` is exactly what
-made CJK columns misalign before.
+### Component limits (from the Component Reference)
+
+Everything the bridge emits is checked against the reference before it is sent:
+
+| Limit | Value |
+|---|---|
+| Components per message | 40 (recursive) |
+| Combined displayable text per message | 4000 characters |
+| Text Display content | 1-4000 characters |
+| Buttons per Action Row | 5, or exactly one select |
+| String Select options | 25 (label/value/description 100, placeholder 150) |
+| Button label / custom_id | 80 / 100 characters |
+| Modal | 5 components, 45-character title, 45-character Label, 100-character description |
+| Text Input | min 0, max 4000, placeholder 100, value 4000 |
+
+A payload that violates a limit throws while the card is built, so the failure stays
+local instead of becoming a `400 BAD REQUEST` from Discord. A V2 payload also strips
+`content`, `embeds`, `stickers`, `poll` and `shared_client_theme`, which the message
+resource rejects once the `IS_COMPONENTS_V2` flag is set.
+
+Tables are never padded to align columns: every row keeps its original `|`
+separators, the header is bolded and the `---` rule row is dropped. Padding by
+display width was tried and abandoned — CJK glyphs do not occupy exactly two
+monospace cells on every client.
 
 ## Thread isolation
 
