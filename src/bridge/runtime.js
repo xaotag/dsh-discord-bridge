@@ -20,6 +20,17 @@ export const DELEGATE = Symbol('delegate')
 /** A bare @Bot followed by a message within this window continues the same turn. */
 export const MENTION_FOLLOWUP_WINDOW_MS = 60_000
 
+/**
+ * Key of one child's Discord thread inside a conversation's thread index.
+ *
+ * The index lives on the runtime because a different module opens the thread
+ * (the stream reporter) than the one that has to find it later (the question
+ * handler); the runtime is the only place both already hold.
+ */
+export function subagentThreadKey(conversationKey, childSessionId) {
+  return `${conversationKey}\u0000${childSessionId}`
+}
+
 export function createLogger() {
   return {
     log: (...args) => console.log(PLUGIN, ...args),
@@ -74,6 +85,14 @@ export function createRuntime({
     lastActiveChannelId: undefined,
     /** conversation key -> bare-@Bot greeting awaiting the user's follow-up */
     pendingMentions: new Map(),
+    /**
+     * `subagentThreadKey(conversation, child)` -> thread id.
+     *
+     * Written when the reporter opens a child's thread, read when a question
+     * names a child: the card belongs next to the activity it is about, not in
+     * the parent channel.
+     */
+    subagentThreads: new Map(),
 
     /** Reply to a slash interaction or a channel, whichever `target` is. */
     async respond(target, text, { replyToMessageId, ephemeral = true, accentColor } = {}) {

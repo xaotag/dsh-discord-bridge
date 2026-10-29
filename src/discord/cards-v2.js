@@ -257,6 +257,10 @@ function subagentGlyph(child) {
 /** One subagent as a single `-#` line: label, latest tool, and its description. */
 function subagentRow(child) {
   const label = clipSubagentLabel(child?.label) || '子代理'
+  // With a thread there is nothing left to summarise: status, tool and prose
+  // all live on the thread's card, and repeating them here is what made the
+  // parent block compete with the child's own thread. The link is the whole row.
+  if (child?.threadId) return `-# ↳ 「${label}」🧵 <#${child.threadId}>`
   const name = String(child?.name ?? '').trim().slice(0, 48)
   // Before the child calls a tool, the only fact available is its latest line of
   // prose; showing that is what makes "the child is doing something" visible.
@@ -265,12 +269,10 @@ function subagentRow(child) {
     48,
   )
   const glyph = subagentGlyph(child)
-  // A thread link is the only path to the child's detail; show it once it exists.
-  const thread = child?.threadId ? ` 🧵 <#${child.threadId}>` : ''
-  if (!name) return `-# ↳ 「${label}」${glyph}${thread}`
+  if (!name) return `-# ↳ 「${label}」${glyph}`
   return description
-    ? `-# ↳ 「${label}」${glyph} \`${name}\` · ${description}${thread}`
-    : `-# ↳ 「${label}」${glyph} \`${name}\`${thread}`
+    ? `-# ↳ 「${label}」${glyph} \`${name}\` · ${description}`
+    : `-# ↳ 「${label}」${glyph} \`${name}\``
 }
 
 /**

@@ -11,8 +11,12 @@ import {
   subagentBlock,
 } from '../src/discord/cards-v2.js'
 import { answerApprovalRequest, resolveRequestAgent } from '../src/bridge/interactions/approval.js'
-import { answerUserQuestions } from '../src/bridge/interactions/question.js'
-import { DELEGATE } from '../src/bridge/runtime.js'
+import {
+  answerUserQuestions,
+  handleQuestionSelect,
+  questionChannel,
+} from '../src/bridge/interactions/question.js'
+import { DELEGATE, subagentThreadKey } from '../src/bridge/runtime.js'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -114,6 +118,130 @@ test('the block marks finished and failed children, and says when all are done',
   assert.match(block, /-# 🧩 子代理已全部结束/)
   assert.match(block, /「A」✓ `read`/)
   assert.match(block, /「B」✖ `bash`/)
+})
+
+test('a child thread replaces the parent row detail with a link', () => {
+  const withThread = subagentBlock([
+    {
+      id: 'a',
+      label: '决策回传闭环测试 A',
+      depth: 1,
+      name: 'send_message',
+      description: '选择',
+      status: 'completed',
+      running: false,
+      threadId: 't-a',
+    },
+  ])
+  // The thread card carries status, tool and prose; the parent keeps the door
+  // to it and nothing else.
+  assert.equal(withThread, '-# 🧩 子代理已全部结束\n\n-# ↳ 「决策回传闭环测试 A」🧵 <#t-a>')
+  assert.ok(!withThread.includes('send_message'))
+  assert.ok(!withThread.includes('选择'))
+
+  const withoutThread = subagentBlock([
+    { id: 'a', label: 'A', depth: 1, name: 'read', status: 'running', running: true },
+  ])
+  assert.match(withoutThread, /「A」⟳ `read`/, 'no thread means the row keeps its detail')
+})
+
+test('a question that names a child is filed under that child thread', () => {
+  const runtime = {
+    subagentThreads: new Map([[subagentThreadKey('c1', 'child-a'), 't-a']]),
+    agents: {
+      tree: { childrenOf: () => [{ sessionId: 'child-a', label: '决策回传闭环测试 A' }] },
+    },
+  }
+
+  assert.equal(
+    questionChannel(runtime, {
+      channelId: 'c1',
+      question: { header: '决策回传闭环测试 A：选 red 还是 blue？' },
+    }),
+    't-a',
+    'the caller naming the child is the only attribution DSH offers',
+  )
+  assert.equal(
+    questionChannel(runtime, {
+      channelId: 'c1',
+      child: { sessionId: 'child-a' },
+      question: { header: '确认方案' },
+    }),
+    't-a',
+    'a request from the child itself needs no label',
+  )
+  assert.equal(
+    questionChannel(runtime, { channelId: 'c1', question: { header: '确认方案' } }),
+    'c1',
+    'an unattributed question stays where it is always answerable',
+  )
+})
+
+test('answerUserQuestions posts a child-named card into the child thread', async () => {
+  const sent = []
+  const runtime = {
+    agents: {
+      resolveAgent: () => ({ channelId: 'c1', depth: 0 }),
+      tree: { childrenOf: () => [{ sessionId: 'child-a', label: '测试 A' }] },
+    },
+    subagentThreads: new Map([[subagentThreadKey('c1', 'child-a'), 't-a']]),
+    questions: new QuestionRegistry({ timeoutMs: 60_000, logger: { warn() {} } }),
+    transport: {
+      send: async (channelId, payload) => {
+        sent.push({ channelId, payload })
+        return { messageId: 'm1' }
+      },
+      edit: async () => {},
+    },
+    audit: { record() {} },
+    logger: { warn() {} },
+  }
+
+  const pending = answerUserQuestions(runtime, {
+    agent: {},
+    questions: [{ id: 'q1', header: '测试 A', question: '选哪个' }],
+  })
+  await delay(20)
+
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].channelId, 't-a')
+
+  const requestId = [...runtime.questions.pending.keys()][0]
+  runtime.questions.finish(requestId, 'answered')
+  const result = await pending
+  assert.deepEqual(result.answers, [{ id: 'q1', selected: [] }])
+})
+
+test('skipping a question does not send a second private receipt', async () => {
+  const { QUESTION_SKIP_PREFIX } = await import('../src/discord/cards-v2.js')
+  const edits = []
+  const receipts = []
+  const registry = new QuestionRegistry({ timeoutMs: 60_000, logger: { warn() {} } })
+  const entry = registry.create({ channelId: 'c1', questions: [{ id: 'q1', question: '?' }] })
+  const runtime = {
+    questions: registry,
+    config: {},
+    audit: { record() {} },
+    logger: { warn() {} },
+    transport: {
+      deferButton: async () => {},
+      editComponentReply: async (_interaction, payload) => edits.push(payload),
+      replyEphemeral: async (_interaction, text) => receipts.push(text),
+    },
+  }
+  const interaction = {
+    customId: `${QUESTION_SKIP_PREFIX}${entry.id}:0`,
+    channelId: 'c1',
+    guildId: 'g1',
+    user: { id: 'u1' },
+    message: { id: 'm1' },
+  }
+
+  await handleQuestionSelect(runtime, interaction, { authorized: () => true })
+
+  assert.equal(edits.length, 1, 'the card states the outcome')
+  assert.equal(receipts.length, 0, 'no "已跳过。" follow-up repeats it')
+  assert.equal(registry.size, 0, 'the request is settled')
 })
 
 test('long subagent labels are clipped to 24 characters', () => {

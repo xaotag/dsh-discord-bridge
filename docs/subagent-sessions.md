@@ -69,6 +69,9 @@ SessionTree
    `agents.channelForAgent(agent)` 改为走 `SessionTree.resolve`。子代理的授权卡与提问卡
    落在**父会话所在频道**，卡片标题带 `子代理「<label>」`，审计里带子会话 id 与深度。
    仍然只答「桥接自己这棵树」里的请求，其余 `next()`。
+   例外是提问卡：DSH 只允许根代理发 `ask_user_question`（子代理调用会 `DELEGATED_CALLER`），
+   根代理把子代理 `label` 写进 `header` 时，卡片改发进该子代理的子线程；标注不出的问题
+   留在父频道。
 
 2. **事件观察**（`agent-service.js`）
    `observeSession` 不再按对象身份匹配：解析出根 runtime 后，把子会话事件转成
@@ -105,7 +108,8 @@ sink.onSubagentEvent({
 - 子代理第一次报事件时，在父频道下建线程 `🧩 <label>`；`createThread` 失败直接退回旧行为；
 - 线程里只有一张卡片，随事件原地刷新：状态图标、最新正文摘要、最近一次工具与描述；
 - 强调色跟着状态走：运行中琥珀、完成绿、失败红；
-- 父卡片的子代理行追加 `🧵 <#threadId>`，点进去就是该子代理的活动；
+- 父卡片的子代理行在子线程建好后只剩 `-# ↳ 「<label>」🧵 <#threadId>`：状态、工具与
+  正文都在子线程的卡片里，父卡片不再重复；子线程没建成时仍保留状态 + 工具摘要；
 - 父频道本身是 Thread 时无法再嵌套，直接沿用父线程，不新建；
 - 开关 `DSH_DISCORD_SUBAGENT_THREADS=false` 关闭，只保留父卡片摘要。
 
