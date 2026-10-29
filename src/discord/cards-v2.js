@@ -55,6 +55,7 @@ export function cardPayload({
   title,
   body,
   footer,
+  subagents,
   rows = [],
   headingLevel = 2,
   emptyText = '（无内容）',
@@ -73,6 +74,11 @@ export function cardPayload({
   // The footer prefix also occupies characters in the container.
   const cleanFooter = take(suppressMentions(String(footer ?? '')).trim(), FOOTER_PREFIX)
 
+  // Reserve the subagent block before the body. A long answer must not silently
+  // push out the only record of what the children did; the block is short and
+  // the answer can spare the characters.
+  const cleanSubagents = take(suppressMentions(subagentBlock(subagents)).trim())
+
   // Text Display renders full Markdown, so only table syntax is rewritten here;
   // headings and nesting are left exactly as the model wrote them.
   const adaptedBody = adaptMarkdownForTextDisplay(String(body ?? ''))
@@ -81,6 +87,7 @@ export function cardPayload({
   for (const chunk of textChunks(bodyText)) {
     if (chunk) children.push(textDisplay(chunk))
   }
+  if (cleanSubagents) children.push(textDisplay(cleanSubagents))
   if (cleanFooter) {
     children.push(separator({ spacing: 1 }))
     // Subtext is Discord's own small-print style for a footer line.
@@ -150,13 +157,14 @@ export function placeholderCard(text = '⏳ 已接收，正在处理…') {
  */
 export function streamCard(
   text,
-  { startedAt, model, reasoningEffort, caption, accentColor, tools, toolLines } = {},
+  { startedAt, model, reasoningEffort, caption, accentColor, tools, toolLines, subagents } = {},
 ) {
   const body = toolLines === undefined ? interleaveTools(text, tools) : composeBody(text, toolLines)
   return cardPayload({
     accentColor: accentColor ?? ACCENT.thinking,
     body,
-    footer: footerBits({ startedAt, model, reasoningEffort, caption }),
+    subagents,
+    footer: footerBits({ startedAt, model, reasoningEffort, caption, subagents }),
   })
 }
 
@@ -224,7 +232,75 @@ export function inlineToolLines(tools = [], { maxLines = 12 } = {}) {
   return rows.join('\n\n')
 }
 
-/** Tool-run card: one line per call, no argument values. */
+/** How many subtext lines the subagent block may occupy, header included. */
+export const MAX_SUBAGENT_LINES = 8
+
+/** Catalog labels are model-authored and unbounded; cards are not. */
+const SUBAGENT_LABEL_MAX = 24
+
+/** Trim a subagent label to what one card line can hold. */
+function clipSubagentLabel(value, max = SUBAGENT_LABEL_MAX) {
+  const text = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return ''
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
+}
+
+/** `✖` failed, `⟳` still working, `✓` done. */
+function subagentGlyph(child) {
+  if (child?.status === 'failed') return '✖'
+  if (child?.running || child?.status === 'running') return '⟳'
+  return '✓'
+}
+
+/** One subagent as a single `-#` line: label, latest tool, and its description. */
+function subagentRow(child) {
+  const label = clipSubagentLabel(child?.label) || '子代理'
+  const name = String(child?.name ?? '').trim().slice(0, 48)
+  // Before the child calls a tool, the only fact available is its latest line of
+  // prose; showing that is what makes "the child is doing something" visible.
+  const description = (String(child?.description ?? '').trim() || String(child?.text ?? '').trim()).slice(
+    0,
+    48,
+  )
+  const glyph = subagentGlyph(child)
+  if (!name) return `-# ↳ 「${label}」${glyph}`
+  return description
+    ? `-# ↳ 「${label}」${glyph} \`${name}\` · ${description}`
+    : `-# ↳ 「${label}」${glyph} \`${name}\``
+}
+
+/**
+ * Small-print block summarising the subagents working under this turn.
+ *
+ * Child prose never enters the parent card: the block only says which child is
+ * running, what tool it last called, and how that call describes itself. The
+ * description is produced by `describeTool`, so argument values are as absent
+ * here as they are from the parent's own tool lines.
+ *
+ * The block is capped at MAX_SUBAGENT_LINES lines because it competes with the
+ * answer for the 4000-character message budget; the newest lines win and the
+ * rest collapse into one counter.
+ */
+export function subagentBlock(subagents, { maxLines = MAX_SUBAGENT_LINES } = {}) {
+  const list = Array.isArray(subagents) ? subagents.filter(Boolean) : []
+  if (!list.length) return ''
+  const running = list.filter((child) => child?.running || child?.status === 'running').length
+  const header = running > 0 ? `-# 🧩 子代理 ${running} 个运行中` : '-# 🧩 子代理已全部结束'
+  const rows = list.map(subagentRow)
+  const rowBudget = Math.max(1, maxLines - 1)
+  let shown = rows
+  let folded = ''
+  if (rows.length > rowBudget) {
+    const keep = Math.max(0, rowBudget - 1)
+    const hidden = rows.length - keep
+    shown = keep > 0 ? rows.slice(-keep) : []
+    folded = `-# …还有 ${hidden} 个子代理动作`
+  }
+  return [header, ...shown, folded].filter(Boolean).join('\n\n')
+}
+
 /**
  * Tool-run card.
  *
@@ -274,7 +350,7 @@ const FILE_TOOL_FIELDS = {
  *
  * Everything else stays blank rather than echoing raw argument values.
  */
-function describeTool(args, toolName) {
+export function describeTool(args, toolName) {
   const raw = String(args ?? '').trim()
   if (!raw || raw === '{}') return ''
   let parsed
@@ -333,6 +409,7 @@ export function finalCard(text, status = 'completed', meta = {}) {
   return cardPayload({
     accentColor: meta.accentColor ?? state.accent,
     body: interleaveTools(text, meta.tools),
+    subagents: meta.subagents,
     footer: footerBits({ ...meta, caption: meta.caption }),
   })
 }
@@ -372,6 +449,7 @@ export function questionCard({
   selectPrefix = QUESTION_SELECT_PREFIX,
   skipPrefix = QUESTION_SKIP_PREFIX,
   customPrefix = QUESTION_CUSTOM_PREFIX,
+  child,
 } = {}) {
   const q = question ?? {}
   const options = Array.isArray(q.options) ? q.options : []
@@ -380,7 +458,12 @@ export function questionCard({
   // all spend from the documented 4000-character pool.
   const take = textBudget()
 
-  const rawHeading = q.header ? String(q.header) : '❓ 需要你的选择'
+  const label = childLabel(child)
+  // A child's question lands in the parent channel; the heading has to say who
+  // is asking, or the operator answers the wrong agent.
+  const rawHeading = `${q.header ? String(q.header) : '❓ 需要你的选择'}${
+    label ? ` · 子代理「${label}」` : ''
+  }`
   const heading = take(suppressMentions(rawHeading).replace(/\s+/g, ' ').trim(), '## ')
   if (heading) children.push(textDisplay(`## ${heading}`))
 
@@ -501,16 +584,32 @@ export function questionCustomModal({
   })
 }
 
+/**
+ * Label for a subagent-owned card. A child without a catalog fact still gets a
+ * visible identity, so the operator never sees two identically titled cards.
+ */
+function childLabel(child) {
+  if (!child) return ''
+  return clipSubagentLabel(child.label) || '子代理'
+}
+
 /** Confirmation card with approve / reject buttons. */
 export function approvalCard({
   requestId,
-  title = '⚠️ 需要确认',
+  title,
   description,
   footer,
   expiresAt,
   approvePrefix,
   rejectPrefix,
+  child,
 } = {}) {
+  const label = childLabel(child)
+  // A child's request is posted in the parent channel; saying whose request it
+  // is keeps the human from assuming it is the main agent asking.
+  const heading = title ?? (label ? `子代理「${label}」请求授权` : '⚠️ 需要确认')
+  const depth = Number.isFinite(child?.depth) ? child.depth : 0
+  const childNote = label ? `-# 来自子代理（深度 ${depth}）` : ''
   const bits = []
   if (footer) bits.push(footer)
   if (expiresAt) {
@@ -523,8 +622,8 @@ export function approvalCard({
   ])
   return cardPayload({
     accentColor: ACCENT.working,
-    title,
-    body: description || '（无描述）',
+    title: heading,
+    body: [childNote, description || '（无描述）'].filter(Boolean).join('\n\n'),
     footer: bits.join(' · '),
     rows: [row],
   })
@@ -571,7 +670,18 @@ export function withStopRow(payload, messageId, { prefix, label = '停止' } = {
   })
 }
 
-function footerBits({ startedAt, model, reasoningEffort, caption, usage } = {}) {
+/**
+ * Footer `子代理 N` count: running children while any still work, otherwise the
+ * total that took part, so a finished card still shows the delegation happened.
+ */
+function subagentFooterCount(subagents) {
+  const list = Array.isArray(subagents) ? subagents.filter(Boolean) : []
+  if (!list.length) return 0
+  const running = list.filter((child) => child?.running || child?.status === 'running').length
+  return running > 0 ? running : list.length
+}
+
+function footerBits({ startedAt, model, reasoningEffort, caption, usage, subagents } = {}) {
   const bits = []
   if (model) bits.push(`${model}${reasoningEffort ? ` (effort:${reasoningEffort})` : ''}`)
   if (startedAt) {
@@ -580,6 +690,12 @@ function footerBits({ startedAt, model, reasoningEffort, caption, usage } = {}) 
   }
   const usageBits = formatUsage(usage)
   if (usageBits) bits.push(usageBits)
+  const subagentCount = subagentFooterCount(subagents)
+  // caption() already spells out the running children; repeating the count in
+  // the same footer would read like two different numbers.
+  if (subagentCount > 0 && !String(caption ?? '').includes('子代理')) {
+    bits.push(`子代理 ${subagentCount}`)
+  }
   if (caption) bits.push(caption)
   return bits.join(' · ')
 }
