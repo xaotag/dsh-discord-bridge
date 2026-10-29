@@ -31,6 +31,21 @@ import {
 import { conversationKeyFor, safeError } from '../runtime.js'
 
 /**
+ * Autocomplete failures are mostly the operator's own typing.
+ *
+ * An expired interaction ("Unknown interaction" / 10062) means Discord threw the
+ * autocomplete request away before the answer arrived — the user kept typing or
+ * closed the picker. That is normal traffic, not a bridge fault, and logging it
+ * at warn level buries real problems under dozens of lines.
+ */
+export function reportAutocompleteFailure(logger, label, error) {
+  const message = error?.message || String(error)
+  const status = Number(error?.httpStatus ?? error?.status ?? error?.rawError?.code)
+  if (status === 10062 || /unknown interaction/i.test(message)) return
+  logger.warn(`${label}失败:`, message)
+}
+
+/**
  * "停止" button on a streaming card.
  *
  * The custom_id carries the card message id; the conversation key is that same
@@ -145,14 +160,14 @@ export function createInteractionHandler(runtime) {
 
     if (interaction?.isAutocomplete?.() && interaction.commandName === 'dsh') {
       await handleAutocomplete(runtime, interaction).catch((error) =>
-        logger.warn('自动补全失败:', error?.message || String(error)),
+        reportAutocompleteFailure(logger, '自动补全', error),
       )
       return
     }
 
     if (interaction?.isAutocomplete?.() && interaction.commandName === 'deepseek') {
       await handleDeepSeekAutocomplete(runtime, interaction).catch((error) =>
-        logger.warn('DeepSeek 自动补全失败:', error?.message || String(error)),
+        reportAutocompleteFailure(logger, 'DeepSeek 自动补全', error),
       )
       return
     }

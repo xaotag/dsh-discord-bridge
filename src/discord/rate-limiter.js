@@ -56,9 +56,44 @@ function retryAfterMs(error) {
   return undefined
 }
 
+/**
+ * Errors worth one more attempt.
+ *
+ * HTTP 429/5xx are Discord's own answer. The other family is the network
+ * failing *below* the API: an outbound TLS connection that never came up
+ * (`Client network socket disconnected before secure TLS connection was
+ * established`). That is a momentary gap on this host, not a rejection, and a
+ * single retry after a short delay usually lands — which matters most for
+ * interaction replies, where the 15-minute token cannot be replayed by anyone
+ * else.
+ */
+const NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+])
+
 function isTransient(error) {
+  // Discord's JSON error code travels in `rawError.code`; the HTTP status is a
+  // separate field. Check the expiry codes FIRST: they are neither transport
+  // noise nor worth a retry, and they must not fall through to the message match.
+  const jsonCode = Number(error?.rawError?.code)
+  if (jsonCode === 10062 || jsonCode === 40060) return false // Unknown / already acknowledged
   const status = Number(error?.httpStatus ?? error?.status ?? error?.rawError?.code)
-  return status === 429 || status >= 500
+  // Expiry codes are > 5000, so they must be excluded before the 5xx test.
+  if (status === 10062 || status === 40060) return false
+  if (status === 429 || (status >= 500 && status < 1000)) return true
+  const code = String(error?.code ?? error?.cause?.code ?? '')
+  if (NETWORK_CODES.has(code)) return true
+  const message = String(error?.message ?? '')
+  return /secure TLS connection|socket disconnected|network socket|socket hang up|fetch failed/i.test(
+    message,
+  )
 }
 
 function sleep(ms) {

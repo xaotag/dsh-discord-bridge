@@ -196,17 +196,50 @@ export class DiscordTransport {
     )
   }
 
+  /**
+   * Answer a slash interaction, falling back to a channel message.
+   *
+   * `editReply` is the polite path: it keeps the answer attached to the
+   * command. It also has no recovery — the interaction token is single-use, so
+   * once the request fails (a TLS blip, an expired token) the user is left
+   * staring at "the bot is thinking" forever. A plain channel message always
+   * works, so a failed edit degrades into one instead of vanishing.
+   */
   async editInteraction(interaction, text, { accentColor } = {}) {
+    const payload = normalizePayload(noticeCard(text, { accentColor }))
+    try {
+      await this.withAudit(
+        'discord',
+        'interaction.edit',
+        {
+          channelId: interaction.channelId,
+          guildId: interaction.guildId || undefined,
+          userId: interaction.user?.id,
+          detail: { contentLength: String(text || '').length },
+        },
+        () => interaction.editReply(payload),
+      )
+      return
+    } catch (error) {
+      this.logger?.warn?.(
+        '交互回复失败，改发频道消息:',
+        error?.message || String(error),
+      )
+    }
+    const channelId = interaction.channelId
+    if (!channelId) return
     await this.withAudit(
       'discord',
-      'interaction.edit',
+      'interaction.fallback',
       {
-        channelId: interaction.channelId,
+        channelId,
         guildId: interaction.guildId || undefined,
         userId: interaction.user?.id,
         detail: { contentLength: String(text || '').length },
       },
-      () => interaction.editReply(normalizePayload(noticeCard(text, { accentColor }))),
+      () => this.send(channelId, payload),
+    ).catch((error) =>
+      this.logger?.warn?.('兜底回复失败:', error?.message || String(error)),
     )
   }
 
