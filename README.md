@@ -352,6 +352,22 @@ does not actually see it; switch to a vision-capable model for real recognition.
 - DM: just talk.
 - A bound Thread: follow-up messages need no further @.
 
+## Reply resilience and network blips
+
+A Discord interaction token is single-use: once `editReply` fails (a momentary outbound
+TLS drop on this host is the usual cause) there is no second attempt, and the command
+looks unanswered forever.
+
+| Layer | Behaviour |
+|---|---|
+| Transport | A failed `editReply` degrades into a channel message (`interaction.fallback`), so the result is always visible |
+| Rate limiter | Network errors (`ECONNRESET`, `secure TLS connection`, …) are retried with exponential backoff |
+| Expired token | `10062 Unknown interaction` / `40060` are **not** retried — no retry can help |
+| Autocomplete | Failures caused by an expired interaction are silent instead of logged as warnings |
+
+Commands run after `interaction.defer`, so a failed reply does not undo the work: a
+`/dsh permission set` whose receipt was lost still switched the preset.
+
 ## Commands
 
 All bridge APIs are registered as `/dsh` subcommand groups:
