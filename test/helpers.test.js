@@ -413,14 +413,14 @@ test('markdown adapter leaves inline hashes and code fences alone', () => {
   assert.ok(out.includes('const a = 1'))
 })
 
-test('markdown adapter turns a narrow table into a fenced record block', () => {
-  // No Discord surface has table syntax, so every table becomes records inside
-  // a fence; padding columns would drift once CJK glyphs are mixed in.
+test('markdown adapter turns a table into pipe-separated lines', () => {
+  // Discord has no table syntax on any surface; keeping the original `|`
+  // separators is the only form that survives every client.
   const out = adaptMarkdownForEmbed('| a | b |\n|---|---|\n| 1 | 2 |')
-  assert.ok(out.startsWith('```text'), 'the table is fenced')
-  assert.ok(out.includes('1'), 'the key survives')
-  assert.ok(out.includes('2'), 'the value survives')
-  assert.ok(!out.includes('|---|'), 'the separator row is gone')
+  assert.ok(!out.includes('```'), 'no code fence')
+  assert.ok(!out.includes('|---'), 'the rule row is gone')
+  assert.match(out, /\*\*a\*\* \| \*\*b\*\*/, 'header is bolded and pipe-separated')
+  assert.match(out, /^1 \| 2$/m, 'data row keeps its pipes')
 })
 
 test('markdown adapter keeps an unterminated fence verbatim while streaming', () => {
@@ -440,8 +440,9 @@ test('embed payloads go through the markdown adapter', () => {
   const description = payload.embeds[0].description
   assert.ok(!/^# Heading/m.test(description))
   assert.ok(description.includes('**Heading**'))
-  // A three-column table still needs monospace alignment.
-  assert.ok(description.includes('```text'))
+  // Tables become pipe-separated lines inside an embed too.
+  assert.match(description, /\*\*a\*\* \| \*\*b\*\* \| \*\*c\*\*/)
+  assert.ok(!description.includes('```'))
 })
 
 test('config expands ~ in audit and state paths', async () => {
@@ -723,29 +724,23 @@ test('displayWidth counts CJK and emoji as two cells', async () => {
   assert.equal(displayWidth('a名b'), 4)
 })
 
-test('tables are laid out as records, never space-padded columns', async () => {
+test('tables keep pipe separators and never try to align columns', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
   const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |')
-  // A record layout has no column separators to misalign.
-  assert.ok(!out.includes('│'), 'no pipeline column separators')
-  assert.ok(!out.includes('─┼─'), 'no drawn column rule')
-  assert.match(out, /中文\.js/, 'row title present')
-  assert.match(out, /状态：/, 'field label present')
+  assert.match(out, /^\*\*名称\*\* \| \*\*状态\*\* \| \*\*说明\*\*$/m)
+  assert.match(out, /^中文\.js \| ✅ \| 描述$/m)
+  // No alignment attempt: padding is what drifts once CJK is mixed in.
+  assert.ok(!out.includes('│'), 'no box-drawing separators')
+  assert.ok(!out.includes('─'), 'no drawn rule')
+  assert.ok(!out.includes('```'), 'no code fence')
+  assert.ok(!/\s{2,}\|/.test(out), 'no space padding before a separator')
 })
 
-test('two-column tables also render as fenced records', async () => {
+test('a two-column table also stays pipe-separated', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
   const out = convertTables('| 键 | 值 |\n|---|---|\n| a | 1 |')
-  assert.ok(out.startsWith('```text'), 'still fenced')
-  assert.match(out, /^a$/m, 'key becomes the record title')
-  assert.match(out, /值：1/, 'value keeps its column label')
-})
-
-test('wide tables still use a fenced block', async () => {
-  const { convertTables } = await import('../src/discord/markdown.js')
-  const out = convertTables('| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |')
-  assert.ok(out.startsWith('```text'))
-  assert.ok(out.trimEnd().endsWith('```'))
+  assert.match(out, /^\*\*键\*\* \| \*\*值\*\*$/m)
+  assert.match(out, /^a \| 1$/m)
 })
 
 test('components v2 payload sets the flag and drops content/embeds', async () => {
@@ -1437,4 +1432,16 @@ test('countdown edits respect the per-channel rate budget', async () => {
     const inWindow = times.filter((t) => t >= start && t < start + 5000).length
     assert.ok(inWindow <= 5, `five-second window held ${inWindow} edits`)
   }
+})
+
+test('two adjacent tables stay separate instead of merging rows', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const out = convertTables('| a | b |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |')
+  // The rule row of the second table must act as a boundary, not become a data
+  // row of the first.
+  assert.ok(!out.includes('---'), 'no rule row leaked into the output')
+  assert.match(out, /^\*\*a\*\* \| \*\*b\*\*$/m)
+  assert.match(out, /^1 \| 2$/m)
+  assert.match(out, /^\*\*c\*\* \| \*\*d\*\*$/m)
+  assert.match(out, /^3 \| 4$/m)
 })

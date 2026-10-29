@@ -173,6 +173,9 @@ export function convertTables(text, { maxRows = 60 } = {}) {
       const rows = []
       let j = i + 2
       while (j < lines.length && isRow(lines[j])) {
+        // Two tables separated by nothing but a newline get merged by the row
+        // scan above; treat the second one's rule row as a boundary, not data.
+        if (isSeparator(lines[j])) break
         rows.push(splitRow(lines[j]))
         j += 1
       }
@@ -272,34 +275,29 @@ function renderCodeTable(header, rows, { maxRows }) {
 }
 
 /**
- * Lay a table out as records inside a fenced block.
+ * Render a pipe table as plain `|`-separated lines.
  *
- * Each row is a bold first cell followed by `key：value` lines. Nothing is
- * padded, so mixed CJK/Latin content cannot drift: Discord's monospace font
- * does not give CJK glyphs exactly two ASCII cells, which is what made
- * space-padded columns misalign. The whole thing sits in a fence so it reads as
- * a distinct block rather than ordinary prose.
+ * Discord has no table syntax on any surface, so the grid itself cannot be
+ * reproduced. Attempts to fake it — padding columns, fencing them in monospace —
+ * all fail on mixed CJK/Latin content, because a CJK glyph is not exactly two
+ * monospace cells. Keeping the original `|` separators is what survives every
+ * client: each row reads as one line of `a | b | c` without pretending to align.
+ *
+ * The header row is bolded so it still reads as a header, and the `---` rule row
+ * is dropped because Discord would print it literally.
  */
 function renderRecordTable(header, rows, maxRows) {
-  const visible = rows.slice(0, maxRows)
   const lines = []
-  visible.forEach((row, rowIndex) => {
-    if (rowIndex > 0) lines.push('')
-    const [first, ...rest] = row
-    const title = String(first ?? '').trim()
-    lines.push(title || '（未命名）')
-    rest.forEach((cell, index) => {
-      const value = String(cell ?? '').trim()
-      if (!value) return
-      const label = String(header[index + 1] ?? '').trim()
-      lines.push(label ? `  ${label}：${value}` : `  ${value}`)
-    })
-  })
-  if (rows.length > maxRows) {
-    if (lines.length) lines.push('')
-    lines.push(`… 另有 ${rows.length - maxRows} 行`)
+  const headerCells = header.map((cell) => String(cell ?? '').trim())
+  if (headerCells.some(Boolean)) {
+    lines.push(headerCells.map((cell) => (cell ? `**${cell}**` : '')).join(' | '))
   }
-  return `${FENCE}text\n${lines.join('\n')}\n${FENCE}`
+  for (const row of rows.slice(0, maxRows)) {
+    const cells = row.map((cell) => String(cell ?? '').trim())
+    lines.push(cells.join(' | '))
+  }
+  if (rows.length > maxRows) lines.push(`… 另有 ${rows.length - maxRows} 行`)
+  return lines.join('\n')
 }
 
 /** `- [ ] task` → `- ☐ task`, `- [x] done` → `- ☑ done`. */
