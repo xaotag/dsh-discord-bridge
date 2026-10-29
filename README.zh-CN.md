@@ -83,6 +83,8 @@ DSH_DISCORD_COMPLEXITY_THRESHOLD=600
 DSH_DISCORD_MAX_RATE_LIMIT_RETRIES=5
 # 子代理：父回合结束后继续等待仍在跑的子代理多久（毫秒，0=不等）
 DSH_DISCORD_SUBAGENT_SETTLE_MS=120000
+# 子代理：是否给每个子代理单开一个 Discord 子线程（true/false）
+DSH_DISCORD_SUBAGENT_THREADS=true
 # 审计日志
 DSH_DISCORD_AUDIT=true
 DSH_DISCORD_AUDIT_DB=~/.dsh/dsh-discord/audit.sqlite
@@ -287,6 +289,10 @@ DSH 里的 `subagent`、`subagent_fork`、Team 成员都是**独立的 Session**
 - 子代理的人类可读名字来自父会话日志里的 `subagent/catalog` 事件；没有这条事件时退回
   `子代理 <id 前 6 位>`。
 - 解析不到归属的请求仍然交给 `next()`（Web answerer 接管），桥接**绝不猜测频道**。
+- **每个子代理单开一个 Discord 子线程**（默认开，`DSH_DISCORD_SUBAGENT_THREADS=false` 关）：
+  子代理首次有活动时在父频道下建线程 `🧩 <label>`，活动卡片在线程里原地刷新（运行中琥珀、
+  完成绿、失败红），父卡片的子代理行追加 `🧵 <#threadId>` 链接。父频道本身是线程时无法再
+  嵌套，建线程失败就退回原来的「只在父卡片留摘要」行为，不阻塞回合。
 
 实现见 [`docs/subagent-sessions.md`](docs/subagent-sessions.md)。
 
