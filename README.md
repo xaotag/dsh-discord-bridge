@@ -256,6 +256,35 @@ shift a border, and GFM alignment markers (`:---`, `:---:`, `---:`)
 become left, centre and right padding. A table with too many columns to draw at
 one character per column falls back to plain `a \| b` rows.
 
+## Permissions and subagents
+
+DSH's permission preset is the pair (sandbox mode, approval policy), and that pair is
+what a delegated child inherits at spawn:
+
+| Preset | Sandbox | Approval | Inherited by children |
+|---|---|---|---|
+| `workspace-write` | workspace only | `ask` | no |
+| `danger-full-access` | everywhere | `never` | yes |
+| `auto` | everywhere | `never` | yes |
+
+A child's approval policy is pinned to `never` when it is spawned (`dsh-subagent`'s
+delegation capture), so a subagent can never raise an approval prompt itself — an
+escalation it asks for is refused immediately. To let a subagent work outside the
+workspace, switch first and delegate second:
+
+```text
+1. /dsh permission set auto              <- the child inherits this preset
+2. delegate
+3. /dsh permission set workspace-write   <- take it back
+```
+
+A child that hits a permission wall should not retry: it reports what it needed in its
+final result and the root decides. That rule is injected through the
+`discord:subagent-permission-guide` system-prompt section.
+
+Security note: while `auto` / `danger-full-access` is active, neither the conversation nor
+the children it spawns ask for confirmation — switch back when you are done.
+
 ## Thread isolation
 
 Complex tasks in guild text channels (long text, attachments, keywords, or over the
@@ -337,6 +366,8 @@ All bridge APIs are registered as `/dsh` subcommand groups:
 | `/dsh model` | `list` | List available models for the current provider |
 | | `set <provider>/<model>` | Switch model in place without changing Session |
 | | `reasoning <off\|low\|high\|max>` | Switch reasoning effort in place |
+| `/dsh permission` | `show` | Show the current permission preset (sandbox + approval) |
+| | `set <preset>` | Switch it without recreating the Session; children inherit it |
 | `/dsh task` | `ask <text>` | Submit a task |
 | | `steer <text>` | Steer the current task at its nearest step |
 | | `stop` | Stop the current task |

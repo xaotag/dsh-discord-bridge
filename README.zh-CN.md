@@ -325,6 +325,28 @@ DSH 里的 `subagent`、`subagent_fork`、Team 成员都是**独立的 Session**
   把消息偷偷转给主 Agent；
 - 主频道那张卡片仍然只显示子代理的活动摘要；子代理的正文只出现在它自己的线程里。
 
+## 权限与子代理
+
+DSH 的权限预设是「沙箱模式 + 审批策略」这一对，也是**子代理派发时被继承的东西**：
+
+| 预设 | 沙箱 | 审批 | 子代理继承 |
+|---|---|---|---|
+| `workspace-write` | 只能写工作区 | `ask` | ❌ |
+| `danger-full-access` | 全盘 | `never` | ✅ |
+| `auto` | 全盘 | `never` | ✅ |
+
+子代理的审批策略在派发时**固定为 `never`**（`dsh-subagent` 的委派捕获），所以子代理自己永远弹不出审批卡：它请求提权会被当场拒绝。要让子代理做工作区外的操作，顺序是：
+
+```text
+1. /dsh permission set auto          ← 先切父会话，子代理才会继承
+2. 再派发子代理
+3. /dsh permission set workspace-write   ← 用完收回
+```
+
+子代理撞到权限墙时不该重试：它把「需要什么权限」写进最终结果，由父代理决定下一步。这条规则通过系统提示 `discord:subagent-permission-guide` 注入给 Agent。
+
+安全提醒：切到 `auto` / `danger-full-access` 后，本会话及其派发的子代理都不再需要人工确认，用完记得切回。
+
 ## 上下文与安全
 
 - 默认 `isolation: channel`：按 Channel ID / Thread ID 隔离并持久化 DSH Session。
@@ -369,6 +391,8 @@ DSH 里的 `subagent`、`subagent_fork`、Team 成员都是**独立的 Session**
 | `/dsh model` | `list` | 列出当前 provider 可用模型 |
 | | `set <provider>/<model>` | 原地切换模型，不更换 Session |
 | | `reasoning <off\|low\|high\|max>` | 原地切换推理等级 |
+| `/dsh permission` | `show` | 查看当前权限预设（沙箱 + 审批策略） |
+| | `set <preset>` | 切换权限预设，不更换 Session；子代理会继承 |
 | `/dsh task` | `ask <文本>` | 提交任务 |
 | | `steer <文本>` | 引导当前任务最近步骤 |
 | | `stop` | 停止当前任务 |

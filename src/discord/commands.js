@@ -24,6 +24,9 @@ export const HELP_TEXT = [
   '`create <标题>` 手动创建子线程',
   '`info` 查看当前 Channel/Thread 信息',
   '',
+  '**/dsh permission**',
+  '`show` 查看当前权限预设',
+  '`set <preset>` 切换（子代理继承 auto / danger-full-access）',
   '**/dsh system**',
   '`help` 本帮助',
   '`ping` 检查 Bot/网关延迟',
@@ -93,6 +96,20 @@ export const dshCommand = new SlashCommandBuilder()
   )
   .addSubcommandGroup((group) =>
     group
+      .setName('permission')
+      .setDescription('权限预设（沙箱 + 审批策略，子代理会继承）')
+      .addSubcommand((c) => c.setName('show').setDescription('查看当前权限预设'))
+      .addSubcommand((c) =>
+        c
+          .setName('set')
+          .setDescription('切换权限预设（不更换 Session）')
+          .addStringOption((o) =>
+            o.setName('preset').setDescription('workspace-write | danger-full-access | auto').setRequired(true),
+          ),
+      ),
+  )
+  .addSubcommandGroup((group) =>
+    group
       .setName('task')
       .setDescription('任务执行')
       .addSubcommand((c) =>
@@ -149,7 +166,7 @@ export const dshCommand = new SlashCommandBuilder()
 export const DSH_COMMAND_BODY = dshCommand.toJSON()
 
 export function parseTextCommand(text) {
-  const match = /^[!/]dsh\s+(session|model|task|thread|system)\s+([a-z-]+)(?:\s+([\s\S]+))?\s*$/i.exec(
+  const match = /^[!/]dsh\s+(session|model|permission|task|thread|system)\s+([a-z-]+)(?:\s+([\s\S]+))?\s*$/i.exec(
     String(text || '').trim(),
   )
   if (!match) return undefined
@@ -212,7 +229,8 @@ export function normalizeInteraction(interaction) {
     command === 'ask' || command === 'steer'
       ? readOption(interaction, 'text')
       : command === 'set' || command === 'reasoning' || command === 'model'
-        ? readOption(interaction, 'value')
+        ? // `set` is shared by model and permission: try both option names.
+          (readOption(interaction, 'preset') ?? readOption(interaction, 'value'))
         : command === 'create'
           ? readOption(interaction, 'name')
           : command === 'bind'
@@ -238,6 +256,8 @@ export function normalizeInteraction(interaction) {
     audit: ['system', 'audit'],
     confirm: ['system', 'confirm'],
     sudo: ['system', 'sudo'],
+    permission: ['permission', 'set'],
+    'permission-show': ['permission', 'show'],
   }
   if (!group && legacy[command]) {
     const [g, c] = legacy[command]
