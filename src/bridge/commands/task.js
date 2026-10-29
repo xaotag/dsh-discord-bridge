@@ -6,9 +6,12 @@
  */
 import { runPrompt } from '../prompt-runner.js'
 
-export async function handleTaskCommand(runtime, { command, arg, channelId, guildId, kind, target, replyToMessageId }) {
+export async function handleTaskCommand(
+  runtime,
+  { command, arg, channelId, conversationKey, guildId, kind, target, replyToMessageId },
+) {
   const { agents, respond } = runtime
-  const key = channelId
+  const key = conversationKey || channelId
   const meta = { channelId: key, guildId, kind }
 
   switch (command) {
@@ -23,7 +26,7 @@ export async function handleTaskCommand(runtime, { command, arg, channelId, guil
         prompt: text,
         placeholder: undefined,
         replyToMessageId,
-        boundChannelId: channelId,
+        boundChannelId: key,
       })
       return true
     }

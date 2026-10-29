@@ -3,9 +3,12 @@
  */
 import { extractSessionId } from '../agent-service.js'
 
-export async function handleSessionCommand(runtime, { command, arg, channelId, guildId, kind, target, replyToMessageId }) {
+export async function handleSessionCommand(
+  runtime,
+  { command, arg, channelId, conversationKey, guildId, kind, target, replyToMessageId },
+) {
   const { agents, respond, logger } = runtime
-  const key = channelId
+  const key = conversationKey || channelId
   const meta = { channelId: key, guildId, kind }
 
   switch (command) {

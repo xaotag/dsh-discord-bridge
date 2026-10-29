@@ -234,13 +234,24 @@ embed。答案卡片原地编辑，长任务下历史不丢失。
 把边框顶歪。列数多到每列 1 个字符仍放不下时，
 退回 `a \| b` 的行式输出。
 
-## Thread 隔离
+## Thread 与 Session 归属
 
 Guild 文字频道中的复杂任务（长文本、附件、关键词或超过阈值）会自动创建 Thread：
 
 - 主频道占位消息被编辑为 `🧵 子任务已转到子线程：<#threadId>`
 - 详细流式文本、reasoning 和工具状态输出到 Thread
 - 主频道不再重复最终长文本，仅保留跳转链接
+
+**Thread 只是呈现面，不拥有 Session。** 会话键始终是发起任务的频道，所以在同一个频道里
+连续发起的多个复杂任务共用一个 Session——早期版本按 Thread id 记录会话，导致每开一个
+Thread 就在 Web 里多出一条新 Session、上下文也断在那里。
+
+两种情况例外，仍然各用各的 Session：
+
+- 该 Thread 之前已经绑定过 Session（旧版本的 Thread 会话、或 `/dsh session bind` 绑过）；
+- Thread 里的消息找不到父频道。
+
+在 Thread 里说话等同于在父频道里说话：继续同一个 Session，回复也落在 Thread 里。
 
 ## Agent preset 与工具集
 
