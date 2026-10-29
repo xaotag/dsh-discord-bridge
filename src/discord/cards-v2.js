@@ -548,7 +548,11 @@ export function decidedApprovalCard(decision, { title, description } = {}) {
 
 export const APPROVAL_STATES = {
   approved: { title: '✅ 已批准', accent: ACCENT.completed, body: '操作已批准。' },
-  rejected: { title: '🚫 已拒绝', accent: ACCENT.cancelled, body: '操作已拒绝。' },
+  // A refusal is a red state, not the grey "user stopped" one: the two look
+  // nothing alike and the operator expects the card to match their click.
+  rejected: { title: '🚫 已拒绝', accent: ACCENT.failed, body: '操作已拒绝。' },
+  timeout: { title: '⏹️ 已超时', accent: ACCENT.cancelled, body: '未在时限内确认，按拒绝处理。' },
+  cancelled: { title: '🚫 已取消', accent: ACCENT.cancelled, body: '请求已撤回。' },
   denied: { title: '⛔ 无权限', accent: ACCENT.failed, body: '已批准，但系统拒绝了该操作。' },
 }
 

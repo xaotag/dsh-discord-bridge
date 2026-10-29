@@ -157,16 +157,13 @@ export async function handleQuestionSelect(runtime, interaction, { authorized })
     return
   }
 
-  // Replace this question's controls with its outcome.
+  // Replace this question's controls with its outcome, through the interaction
+  // so the edit targets the message that was actually answered.
   try {
-    const messageId = interaction.message?.id
-    if (messageId) {
-      await transport.edit(
-        interaction.channelId,
-        messageId,
-        answeredQuestionCard({ question, selected, custom, skipped: skip }),
-      )
-    }
+    await transport.editComponentReply(
+      interaction,
+      answeredQuestionCard({ question, selected, custom, skipped: skip }),
+    )
   } catch (error) {
     logger.warn('更新问题卡片失败:', error?.message || String(error))
   }
