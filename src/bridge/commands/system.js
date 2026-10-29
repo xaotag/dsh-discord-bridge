@@ -6,6 +6,7 @@
  * approved-but-refused (SELinux/AppArmor/DAC/polkit), or failed.
  */
 import { HELP_TEXT } from '../../discord/commands.js'
+import { ACCENT } from '../../discord/cards-v2.js'
 import {
   classifyPrivilegedOutcome,
   describePrivilegedOutcome,
@@ -13,6 +14,26 @@ import {
 } from '../privilege-outcome.js'
 import { requestApproval } from '../interactions/approval.js'
 import { clipForDiscord } from '../runtime.js'
+
+/**
+ * Colour of a `/dsh system` receipt.
+ *
+ * Green means "nothing went wrong" — the operator's click is not the outcome,
+ * the result is. A refusal is red, and a timeout is the neutral grey used by
+ * every other expired card.
+ */
+export function decisionAccent(decision) {
+  if (decision === 'approved') return ACCENT.completed
+  if (decision === 'timeout') return ACCENT.cancelled
+  return ACCENT.failed
+}
+
+/** Same rule applied to a finished privileged run. */
+export function executionAccent(result = {}) {
+  if (result.status === 'ok') return ACCENT.completed
+  if (result.status === 'timeout') return ACCENT.cancelled
+  return ACCENT.failed
+}
 
 export async function handleSystemCommand(
   runtime,
@@ -82,11 +103,20 @@ export async function handleSystemCommand(
         detail: { decision, action },
       })
       if (decision === 'timeout') {
-        await respond(target, '⏱ 确认已超时，操作未执行。', { replyToMessageId })
+        await respond(target, '⏱ 确认已超时，操作未执行。', {
+          replyToMessageId,
+          accentColor: decisionAccent(decision),
+        })
       } else if (decision === 'approved') {
-        await respond(target, `✅ 已批准：${action}`, { replyToMessageId })
+        await respond(target, `✅ 已批准：${action}`, {
+          replyToMessageId,
+          accentColor: decisionAccent(decision),
+        })
       } else {
-        await respond(target, '🚫 已拒绝，操作未执行。', { replyToMessageId })
+        await respond(target, '🚫 已拒绝，操作未执行。', {
+          replyToMessageId,
+          accentColor: decisionAccent(decision),
+        })
       }
       return true
     }
@@ -154,7 +184,7 @@ async function runSudo(
     await respond(
       target,
       decision === 'timeout' ? '⏱ 确认已超时，未执行。' : '🚫 已拒绝，未执行。',
-      { replyToMessageId },
+      { replyToMessageId, accentColor: decisionAccent(decision) },
     )
     return
   }
@@ -203,5 +233,8 @@ async function runSudo(
   if (result.stderr?.trim()) {
     lines.push('', '**stderr**', '```', clipForDiscord(result.stderr), '```')
   }
-  await respond(target, lines.join('\n'), { replyToMessageId })
+  await respond(target, lines.join('\n'), {
+    replyToMessageId,
+    accentColor: executionAccent(result),
+  })
 }

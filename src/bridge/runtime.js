@@ -76,13 +76,13 @@ export function createRuntime({
     pendingMentions: new Map(),
 
     /** Reply to a slash interaction or a channel, whichever `target` is. */
-    async respond(target, text, { replyToMessageId, ephemeral = true } = {}) {
+    async respond(target, text, { replyToMessageId, ephemeral = true, accentColor } = {}) {
       if (target?.isRepliable) {
         return transport
-          .editInteraction(target, text)
-          .catch(() => transport.replyInteraction(target, text, ephemeral))
+          .editInteraction(target, text, { accentColor })
+          .catch(() => transport.replyInteraction(target, text, ephemeral, { accentColor }))
       }
-      return transport.send(target, noticeCard(text), { replyToMessageId })
+      return transport.send(target, noticeCard(text, { accentColor }), { replyToMessageId })
     },
   }
 }

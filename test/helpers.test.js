@@ -980,6 +980,41 @@ test('the private receipt card is painted with the colour it was given', async (
   assert.equal(plain.components[0].accent_color, ACCENT.notice, 'other notices keep the notice colour')
 })
 
+test('/dsh system receipts are coloured by the outcome, not by the click', async () => {
+  const { decisionAccent, executionAccent } = await import('../src/bridge/commands/system.js')
+  const { ACCENT } = await import('../src/discord/cards-v2.js')
+
+  assert.equal(decisionAccent('approved'), ACCENT.completed)
+  assert.equal(decisionAccent('rejected'), ACCENT.failed)
+  assert.equal(decisionAccent('timeout'), ACCENT.cancelled, 'an expired confirm is the neutral grey')
+  assert.equal(executionAccent({ status: 'ok', exitCode: 0 }), ACCENT.completed)
+  assert.equal(executionAccent({ status: 'error', stderr: 'nc: command not found' }), ACCENT.failed)
+  assert.equal(executionAccent({ status: 'denied' }), ACCENT.failed)
+  assert.equal(executionAccent({ status: 'timeout' }), ACCENT.cancelled)
+})
+
+test('respond carries the receipt colour to channels and slash replies', async () => {
+  const { createRuntime } = await import('../src/bridge/runtime.js')
+  const { ACCENT } = await import('../src/discord/cards-v2.js')
+  const sent = []
+  const edits = []
+  const runtime = createRuntime({
+    config: {},
+    logger: { warn() {} },
+    transport: {
+      send: async (...args) => sent.push(args),
+      editInteraction: async (...args) => edits.push(args),
+    },
+  })
+
+  await runtime.respond('channel-1', '🚫 已拒绝，操作未执行。', { accentColor: ACCENT.failed })
+  assert.equal(sent[0][1].components[0].accent_color, 0xed4245, 'a channel receipt is red')
+
+  const target = { isRepliable: true, channelId: 'c1' }
+  await runtime.respond(target, '✅ 已批准并执行（退出码 0）', { accentColor: ACCENT.completed })
+  assert.equal(edits[0][2].accentColor, ACCENT.completed, 'the slash reply takes the same colour')
+})
+
 test('DSH approval requests are answered from a Discord card', async () => {
   const { answerApprovalRequest, describeApproval, approvalOutcome } = await import(
     '../src/bridge/interactions/approval.js'
