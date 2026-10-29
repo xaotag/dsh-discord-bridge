@@ -1445,3 +1445,34 @@ test('two adjacent tables stay separate instead of merging rows', async () => {
   assert.match(out, /^\*\*c\*\* \| \*\*d\*\*$/m)
   assert.match(out, /^3 \| 4$/m)
 })
+
+test('the Discord filter keeps only what the client renders', async () => {
+  const { discordMarkdownFilter } = await import('../src/discord/markdown.js')
+
+  // Rendered by the client: left alone.
+  const supported = '# 标题\n**粗** *斜* __下划线__ ~~删除~~ ||剧透|| `码` [链](u)\n- 列表\n> 引用'
+  assert.equal(discordMarkdownFilter(supported), supported)
+
+  // Not rendered: rewritten so it does not appear as literal syntax.
+  assert.equal(discordMarkdownFilter('上\n\n---\n\n下').replace(/\n+/g, '\n').trim(), '上\n下')
+  assert.equal(discordMarkdownFilter('#### 深标题'), '**深标题**')
+  assert.equal(discordMarkdownFilter('标题\n====='), '# 标题')
+  assert.equal(discordMarkdownFilter('![图](https://x/a.png)'), '[图](https://x/a.png)')
+  assert.equal(discordMarkdownFilter('文本 <div class="x">内容</div> 结束'), '文本 内容 结束')
+})
+
+test('the Discord filter never rewrites fenced code', async () => {
+  const { discordMarkdownFilter } = await import('../src/discord/markdown.js')
+  const fenced = '```\n#### 保持原样\n---\n![x](y)\n<b>tag</b>\n```'
+  assert.equal(discordMarkdownFilter(fenced), fenced)
+})
+
+test('a Text Display keeps headings while an embed does not', async () => {
+  const { adaptMarkdownForTextDisplay, adaptMarkdownForEmbed } = await import(
+    '../src/discord/markdown.js'
+  )
+  // A Text Display renders # headings, so they must survive.
+  assert.equal(adaptMarkdownForTextDisplay('# 标题'), '# 标题')
+  // An embed description never renders them, so they become bold.
+  assert.equal(adaptMarkdownForEmbed('# 标题').trim(), '**标题**')
+})

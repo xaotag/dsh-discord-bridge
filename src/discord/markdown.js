@@ -1,54 +1,108 @@
 /**
- * Markdown → Discord embed adapter.
+ * Discord Markdown filter.
  *
- * Discord's embed `description` renders only a small subset of Markdown:
- * bold / italic / underline / strikethrough, inline code, fenced code blocks,
- * block quotes, and bare links. It does NOT render:
+ * Discord's own docs state that it "utilizes a subset of markdown" for
+ * rendering message content, and the API reference then lists only the custom
+ * syntaxes it adds (mentions, custom emoji, timestamps) — it never enumerates
+ * the subset. Everything outside that subset is printed literally by the client,
+ * so the model's prose has to be filtered before it reaches a card.
  *
- *   - ATX headings (`#`, `##`, ...) — shown as literal "#" text
- *     (see https://github.com/discord/discord-api-docs/issues/7167)
- *   - tables — shown as raw pipes
- *   - nested / ordered list indentation
+ * Rendered by the client (keep as-is):
+ *   `**bold**` `*italic*` `__underline__` `~~strike~~` `||spoiler||`
+ *   `` `code` `` fenced blocks, `> quote`, `-` / `1.` lists,
+ *   `[text](url)`, `#`/`##`/`###` headings, `-#` subtext
  *
- * Ordinary message `content` *does* render headings. So instead of dropping
- * the structure we downgrade it into something an embed renders correctly:
- * headings become bold lines, tables become aligned fenced blocks, and task
- * lists become checkbox glyphs.
+ * NOT rendered (this filter rewrites them):
+ *   - `|---|` tables            -> `a | b` lines (see convertTables)
+ *   - horizontal rules `---`    -> dropped; printed literally otherwise
+ *   - `####` and deeper         -> bold line (client stops at h3)
+ *   - setext headings (`===`)   -> `#` heading
+ *   - images `![alt](url)`      -> `[alt](url)` link
+ *   - raw HTML tags             -> stripped, they would show as text
+ *   - `<t:UNIX:R>` timestamps   -> never emitted; a Text Display does not expand
+ *                                  message-formatting timestamps
  *
- * Fenced code blocks are protected first: their content is never rewritten.
+ * Fenced code blocks are protected first and never rewritten.
  */
 
 const FENCE = '```'
 
 /**
- * Rewrite GitHub-flavoured Markdown for a Text Display (Components V2).
+ * The filter itself: one pass, outside code fences only.
  *
- * A Text Display renders the full Markdown rules, so headings, nested lists and
- * emphasis all survive untouched. Only the constructs Discord still lacks are
- * converted — tables, since no Discord surface has table syntax.
+ * Shared by both payload kinds — a Text Display and an embed description render
+ * the same subset, so there is no reason to keep two rule sets.
  */
-export function adaptMarkdownForTextDisplay(text) {
+export function discordMarkdownFilter(text, { keepHeadings = true } = {}) {
   const source = String(text ?? '')
   if (!source) return ''
-  return mapOutsideCode(source, (segment) => convertTables(segment))
+  return mapOutsideCode(source, (segment) => {
+    let out = segment
+    out = convertTables(out)
+    out = convertSetextHeadings(out)
+    out = keepHeadings ? clampHeadings(out) : downgradeHeadings(out)
+    out = convertImages(out)
+    out = stripHtmlTags(out)
+    out = dropHorizontalRules(out)
+    out = convertTaskLists(out)
+    out = flattenDeepNesting(out)
+    // Dropping a rule line leaves the blank lines that surrounded it.
+    out = out.replace(/\n{3,}/g, '\n\n')
+    return out
+  })
+}
+
+/** `Title` over `=====` becomes `# Title`. */
+export function convertSetextHeadings(text) {
+  return String(text ?? '').replace(
+    /^(?![ \t]*[-*+>#|`])([^\n]+)\n[ \t]*(=+|-{2,})[ \t]*$/gm,
+    (match, title, rule) => {
+      const clean = String(title).trim()
+      if (!clean) return match
+      return `${rule.startsWith('=') ? '#' : '##'} ${clean}`
+    },
+  )
+}
+
+/** The client renders `#` through `###`; deeper levels become bold text. */
+export function clampHeadings(text) {
+  return String(text ?? '').replace(/^(#{4,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/gm, (_m, _hashes, title) => {
+    const clean = String(title).trim()
+    return clean ? `**${clean}**` : _m
+  })
+}
+
+/** `![alt](url)` -> `[alt](url)`: a card cannot embed the image inline. */
+export function convertImages(text) {
+  return String(text ?? '').replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_m, alt, url) =>
+    alt ? `[${alt}](${url})` : `<${url}>`,
+  )
+}
+
+/** Strip HTML tags, which the client prints verbatim. */
+export function stripHtmlTags(text) {
+  return String(text ?? '').replace(/<\/?(?:div|span|p|br|hr|b|i|u|s|table|tr|td|th|ul|ol|li|h[1-6]|img|a|code|pre)\b[^>]*>/gi, '')
+}
+
+/** A `---` rule is printed literally, so remove the line entirely. */
+export function dropHorizontalRules(text) {
+  return String(text ?? '').replace(/^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '')
 }
 
 /**
- * Rewrite GitHub-flavoured Markdown so it renders acceptably inside an embed
- * description. Never touches text inside fenced code blocks.
+ * Text Display (Components V2): headings render, so only unsupported syntax is
+ * rewritten.
+ */
+export function adaptMarkdownForTextDisplay(text) {
+  return discordMarkdownFilter(text, { keepHeadings: true })
+}
+
+/**
+ * Embed description: headings never render here, so they are flattened to bold
+ * as well, and long code lines are wrapped.
  */
 export function adaptMarkdownForEmbed(text) {
-  const source = String(text ?? '')
-  if (!source) return ''
-  const converted = mapOutsideCode(source, (segment) => {
-    let out = segment
-    out = convertTables(out)
-    out = convertTaskLists(out)
-    out = downgradeHeadings(out)
-    out = flattenDeepNesting(out)
-    return out
-  })
-  return wrapLongCodeLines(converted)
+  return wrapLongCodeLines(discordMarkdownFilter(text, { keepHeadings: false }))
 }
 
 /**
