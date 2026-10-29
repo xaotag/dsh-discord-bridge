@@ -137,13 +137,32 @@ Inspect the current channel's recent operations from Discord:
 
 All conversational messages are rendered as **Components V2 cards** — a Container with Text Displays, Separators and Action Rows. The legacy `content` and `embeds` fields are not used.
 
-| Card | Title | Accent | Content |
+| Card | Top heading | Accent | Content |
 |---|---|---|---|
-| Placeholder / answer (streaming) | `⏳ Generating…` | Blue `#5865F2` | Aggregating assistant text |
+| Placeholder / answer (streaming) | none | Blue `#5865F2` | Aggregating assistant text |
 | Tool call (persistent) | `🛠 Tool call` | Amber `#FAA61A` | One line per call inside a code block: `✓ bash  description` |
-| Done | `✅ Completed` | Green `#57F287` | Final assistant text |
-| Stopped | `⏹️ Stopped` | Grey `#99AAB5` | Partial generated text |
-| Failed | `❌ Failed` | Red `#ED4245` | Redacted error message |
+| Done | none | Green `#57F287` | Final assistant text |
+| Stopped | none | Grey `#99AAB5` | Partial generated text |
+| Failed | none | Red `#ED4245` | Redacted error message |
+
+Answer cards carry **no heading**: the container's left bar is the whole status display —
+blue while streaming, green when done, red on failure or refusal. Headings are reserved for
+cards that genuinely need to be told apart (tool call, approval, question).
+
+### Accent semantics and refusals
+
+```text
+blue   #5865F2  streaming
+green  #57F287  finished normally
+grey   #99AAB5  stopped by the user
+red    #ED4245  failed, or a permission request was refused
+```
+
+A refusal also paints the turn red: a rejected approval, a sandbox denial
+(`[sandbox: … denied]`), or a fail-closed `no approval channel` all end with a red bar even
+when the model produced a normal answer. Detection reads the error text DSH writes into the
+tool result (see `src/bridge/denial.js`); an ordinary tool error stays green — that is a
+malfunction, not a refusal.
 
 ### Two-card layout (tool history is preserved)
 

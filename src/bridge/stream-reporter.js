@@ -1,10 +1,12 @@
 import { STOP_BUTTON_PREFIX, formatDuration, progressCaption } from '../discord/renderer.js'
 import {
+  ACCENT,
   finalCard,
   placeholderCard,
   streamCard,
   withStopRow,
 } from '../discord/cards-v2.js'
+import { isPermissionDenial } from './denial.js'
 
 /** Show the "已等待 …" caption only after this much silence. */
 const QUIET_CAPTION_THRESHOLD_MS = 8000
@@ -48,6 +50,8 @@ export class StreamReporter {
     this.reasoning = ''
     /** Finished/started calls, oldest first. Each entry renders as one embed. */
     this.tools = []
+    /** A refusal (approval or sandbox) turns the finished card red. */
+    this.denied = false
     /** Index in tools of the call currently running, or undefined. */
     this.activeTool = undefined
     this.toolCount = 0
@@ -132,8 +136,11 @@ export class StreamReporter {
    * answer card continues to be edited in place, so a turn never leaves orphan
    * fragments behind.
    */
-  onToolResult() {
+  onToolResult(result) {
     if (this.closed) return
+    // A refused approval or sandbox denial is not a tool malfunction: the turn
+    // still finishes, but its bar turns red so it is not read as success.
+    if (isPermissionDenial(result)) this.denied = true
     if (this.activeTool !== undefined) {
       const tool = this.tools[this.activeTool]
       if (tool) tool.endedAt = Date.now()
@@ -164,7 +171,6 @@ export class StreamReporter {
       model: this.model,
       reasoningEffort: this.reasoningEffort,
       caption: this.caption(),
-      title: '⏳ 正在生成…',
       tools: this.tools,
     })
     // The stop button only makes sense while the turn is still running.
@@ -265,6 +271,7 @@ export class StreamReporter {
       model: this.model,
       reasoningEffort: this.reasoningEffort,
       usage,
+      accentColor: this.denied ? ACCENT.failed : undefined,
       caption: this.toolCount > 0 ? `共调用 ${this.toolCount} 次工具，用时 ${formatDuration(elapsed)}` : undefined,
       tools: this.tools,
     })
