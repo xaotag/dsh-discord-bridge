@@ -175,7 +175,7 @@ exactly as written; only syntax Discord lacks at all is converted:
 |---|---|---|
 | `# Heading` | **kept verbatim** | Text Display renders ATX headings |
 | Lists / nesting | **kept verbatim** | Text Display supports nested indentation |
-| Tables | ASCII box (`┌┬┐`, `│`) inside a text code fence | **No** Discord surface has table syntax; a fence is the only monospace surface, and columns are padded by display width (CJK counts as two cells) |
+| Tables | fullwidth grid (`＋－｜`) inside a text code fence, ASCII widened | **No** Discord surface has table syntax; CJK is about 1.7 cells, not 2, so mixed-width padding drifts per client — one font for every glyph is the only stable alignment |
 | Code block content | untouched | Never rewritten |
 
 ### Component limits (from the Component Reference)
@@ -198,14 +198,23 @@ local instead of becoming a `400 BAD REQUEST` from Discord. A V2 payload also st
 `content`, `embeds`, `stickers`, `poll` and `shared_client_theme`, which the message
 resource rejects once the `IS_COMPONENTS_V2` flag is set.
 
-Tables are redrawn as an ASCII box inside a text code fence: column widths come from
-display width (CJK and emoji count as two cells), short columns are padded, long
-cells wrap, and the whole grid is capped at 84 cells — under the 88-cell wrap
-threshold of the embed path, so the line wrapper cannot reflow a drawn table.
-Inline Markdown is stripped before a cell is measured, `\|` escapes do not split
-a row, and GFM alignment markers (`:---`, `:---:`, `---:`) become left, centre and
-right padding. A table with too many columns to draw at the minimum width falls
-back to plain `a \| b` rows instead of overflowing the viewport.
+Tables are redrawn as a fullwidth grid inside a text code fence: every glyph in
+the grid, borders included, is a fullwidth character, so all of them come from the
+same CJK font with the same advance. Alignment then depends only on equal
+character counts per line, which the renderer controls, and no longer on the
+client's font metrics.
+
+Cells sit directly against their borders — no gap characters — and the grid is
+capped at 22 fullwidth characters so a phone does not have to scroll sideways.
+Short cells are still filled with fullwidth spaces at the end, the one space that
+cannot be avoided; over-wide tables shrink the widest column and wrap cells,
+breaking at a space when there is one so numbers and English words stay whole.
+Inline Markdown is stripped before measuring, `\|` escapes are drawn as `丨`
+instead of splitting a row, ambiguous-width punctuation (`·`, `—`, `…`) is replaced by its
+CJK-only equivalent (`・`, `－`, `・・・`) so a Latin font cannot draw it half-width and
+shift a border, and GFM alignment markers (`:---`, `:---:`, `---:`)
+become left, centre and right padding. A table with too many columns to draw at
+one character per column falls back to plain `a \| b` rows.
 
 ## Thread isolation
 

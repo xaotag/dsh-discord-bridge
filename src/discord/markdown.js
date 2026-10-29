@@ -203,29 +203,102 @@ export function downgradeHeadings(text) {
 }
 
 /**
- * Widest grid, in monospace cells, that still reads without horizontal scroll.
- * Kept under `CODE_LINE_WIDTH` so the embed path's line wrapper cannot reflow a
- * drawn table and break its alignment.
+ * Widest table, in fullwidth characters, that a phone can show without
+ * horizontal scrolling. A fullwidth glyph is roughly two ASCII cells, so this
+ * has to stay well under the ASCII-oriented limits used elsewhere.
  */
-export const TABLE_MAX_WIDTH = 84
-/** Columns never shrink below this, so a wrapped cell still has visible room. */
-const TABLE_MIN_COL_WIDTH = 4
+export const TABLE_MAX_CHARS = 22
 /** A single column wider than this wraps instead of pushing the grid out. */
-const TABLE_MAX_COL_WIDTH = 28
+const TABLE_MAX_COL_CHARS = 12
+const FULLWIDTH_SPACE = '\u3000'
 
 /**
- * Convert a GFM pipe table into an ASCII box inside a fenced block.
+ * Convert ASCII to its fullwidth form.
  *
- * Discord has no table syntax on any surface, so the grid can only be drawn in
- * the one place the client uses a monospace font: a code fence. Columns are
- * padded by display width (a CJK glyph or emoji counts as two cells), which is
- * why the raw pipe rows looked ragged.
+ * Discord cannot line up CJK and Latin text by character count: in the code
+ * font one ASCII advance is about 0.6em while a CJK glyph is 1em, so a CJK
+ * character is about 1.7 cells, not 2, and the drift differs per client. The
+ * only way to make a grid survive every client is to stop mixing fonts: every
+ * glyph in the table — borders included — becomes fullwidth, so every glyph
+ * comes from the same CJK font with the same advance. Alignment then depends
+ * only on equal character counts per line, which is exactly what the renderer
+ * controls.
+ */
+/**
+ * Punctuation whose width is "ambiguous" in Unicode: Latin fonts draw it narrow,
+ * CJK fonts draw it fullwidth, and which font wins depends on the client. Inside
+ * the grid that inconsistency would shift a border, so each one is replaced by a
+ * CJK-only glyph with the same meaning.
+ */
+const AMBIGUOUS_GLYPHS = new Map([
+  [0x00b7, '\u30fb'], // · middle dot -> ・ katakana middle dot
+  [0x2022, '\u30fb'], // • bullet
+  [0x2010, '\uff0d'], // ‐ hyphen
+  [0x2011, '\uff0d'], // ‑ non-breaking hyphen
+  [0x2012, '\uff0d'], // ‒ figure dash
+  [0x2013, '\uff0d'], // – en dash
+  [0x2014, '\uff0d'], // — em dash
+  [0x2015, '\uff0d'], // ― horizontal bar
+  [0x2212, '\uff0d'], // − minus sign
+  [0x2026, '\u30fb\u30fb\u30fb'], // … ellipsis -> three CJK dots
+])
+
+export function toFullwidth(text) {
+  let out = ''
+  for (const ch of String(text ?? '')) {
+    const cp = ch.codePointAt(0)
+    const mapped = AMBIGUOUS_GLYPHS.get(cp)
+    if (mapped !== undefined) {
+      out += mapped
+      continue
+    }
+    if (cp === 0x20) {
+      out += FULLWIDTH_SPACE
+      continue
+    }
+    if (cp === 0x7c || cp === 0xff5c) {
+      // A pipe inside a cell would read as a border; use the ideographic
+      // vertical stroke, which has the same advance.
+      out += '\u4e28'
+      continue
+    }
+    if (cp >= 0x21 && cp <= 0x7e) {
+      out += String.fromCodePoint(cp + 0xfee0)
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+const GRAPHEMES = new Intl.Segmenter('zh', { granularity: 'grapheme' })
+
+/** Grapheme clusters: an emoji sequence is one advance, not several. */
+function graphemes(text) {
+  return Array.from(GRAPHEMES.segment(String(text ?? '')), (part) => part.segment)
+}
+
+function charCount(text) {
+  return graphemes(text).length
+}
+
+/**
+ * Convert a GFM pipe table into a fullwidth grid inside a fenced block.
+ *
+ * Every glyph, borders and spaces included, is a fullwidth character, so each
+ * line has the same advance regardless of the client's fonts; equal character
+ * counts per line are therefore enough to align the grid.
+ *
+ * Cells are packed without the usual padding around their content: the border
+ * is the only separator, which keeps a three-column table narrow enough for a
+ * phone. Short cells are still filled with fullwidth spaces at the end for
+ * alignment — that filler is the one space character that cannot be avoided.
  *
  * Column alignment follows the GFM rule row (`:---`, `:---:`, `---:`). A table
- * too wide for `maxWidth` is shrunk column by column and over-long cells wrap;
+ * too wide for `maxChars` is shrunk column by column and over-long cells wrap;
  * a table whose columns cannot fit at all falls back to pipe rows.
  */
-export function convertTables(text, { maxRows = 60, maxWidth = TABLE_MAX_WIDTH } = {}) {
+export function convertTables(text, { maxRows = 60, maxChars = TABLE_MAX_CHARS } = {}) {
   const lines = String(text ?? '').split('\n')
   const out = []
   let i = 0
@@ -252,7 +325,8 @@ export function convertTables(text, { maxRows = 60, maxWidth = TABLE_MAX_WIDTH }
         rows.push(splitRow(lines[j]))
         j += 1
       }
-      out.push(renderAsciiTable(header, aligns, rows, { maxRows, maxWidth }))
+      const grid = renderFullwidthTable(header, aligns, rows, { maxRows, maxChars })
+      out.push(grid ?? renderRecordTable(header, rows, maxRows))
       i = j
       continue
     }
@@ -301,74 +375,6 @@ function parseAlignments(separatorCells, columns) {
 }
 
 /**
- * Display width in monospace cells.
- *
- * A CJK ideograph or an emoji occupies two cells, so `String.length` is the
- * wrong measure for alignment: "名称" is length 2 but renders four cells wide.
- * Padding by length is what made column tables look ragged.
- */
-export function displayWidth(text) {
-  let width = 0
-  for (const ch of String(text ?? '')) {
-    width += charWidth(ch.codePointAt(0))
-  }
-  return width
-}
-
-function charWidth(cp) {
-  // Zero-width and combining marks.
-  if (cp === 0x200b || cp === 0x200d || cp === 0xfeff) return 0
-  if (cp >= 0x0300 && cp <= 0x036f) return 0
-  // Wide / fullwidth ranges: CJK, Hangul, Hiragana, Katakana, fullwidth forms.
-  if (
-    (cp >= 0x1100 && cp <= 0x115f) ||
-    (cp >= 0x2e80 && cp <= 0x303e) ||
-    (cp >= 0x3041 && cp <= 0x33ff) ||
-    (cp >= 0x3400 && cp <= 0x4dbf) ||
-    (cp >= 0x4e00 && cp <= 0x9fff) ||
-    (cp >= 0xa000 && cp <= 0xa4cf) ||
-    (cp >= 0xac00 && cp <= 0xd7a3) ||
-    (cp >= 0xf900 && cp <= 0xfaff) ||
-    (cp >= 0xfe30 && cp <= 0xfe6f) ||
-    (cp >= 0xff00 && cp <= 0xff60) ||
-    (cp >= 0xffe0 && cp <= 0xffe6) ||
-    // Emoji presented as width-2 in Discord's monospace cells: dingbats and
-    // misc symbols (✅ ❌ ⚠), plus the pictographic blocks.
-    (cp >= 0x2600 && cp <= 0x27bf) ||
-    (cp >= 0x2b00 && cp <= 0x2bff) ||
-    (cp >= 0x1f300 && cp <= 0x1f64f) ||
-    (cp >= 0x1f900 && cp <= 0x1f9ff) ||
-    (cp >= 0x1f680 && cp <= 0x1f6ff)
-  ) {
-    return 2
-  }
-  return 1
-}
-
-/** Pad to a display width, never splitting a surrogate pair. */
-function padTo(text, width) {
-  const source = String(text ?? '')
-  const current = displayWidth(source)
-  if (current >= width) return source
-  return source + ' '.repeat(width - current)
-}
-
-/** Truncate to a display width, appending an ellipsis when clipped. */
-function clipToWidth(text, width) {
-  const source = String(text ?? '')
-  if (displayWidth(source) <= width) return source
-  let out = ''
-  let used = 0
-  for (const ch of source) {
-    const w = charWidth(ch.codePointAt(0))
-    if (used + w > width - 1) break
-    out += ch
-    used += w
-  }
-  return `${out}…`
-}
-
-/**
  * Strip inline Markdown from a cell before it is measured.
  *
  * The grid is printed inside a code fence, where `**bold**` and `` `code` ``
@@ -390,69 +396,64 @@ function plainCellText(text) {
   return out.replace(/\s+/g, ' ').trim()
 }
 
-/** Pad a cell to a display width. Padding by `String.length` drifts on CJK. */
-function padDisplay(text, width, align = 'left') {
+/** Pad a cell with fullwidth spaces; the filler is what keeps borders aligned. */
+function padFullwidth(text, width, align = 'left') {
   const source = String(text ?? '')
-  const current = displayWidth(source)
-  if (current >= width) return source
-  const pad = width - current
-  if (align === 'right') return ' '.repeat(pad) + source
+  const fill = Math.max(0, width - charCount(source))
+  if (fill === 0) return source
+  if (align === 'right') return FULLWIDTH_SPACE.repeat(fill) + source
   if (align === 'center') {
-    const left = Math.floor(pad / 2)
-    return ' '.repeat(left) + source + ' '.repeat(pad - left)
+    const left = Math.floor(fill / 2)
+    return FULLWIDTH_SPACE.repeat(left) + source + FULLWIDTH_SPACE.repeat(fill - left)
   }
-  return source + ' '.repeat(pad)
+  return source + FULLWIDTH_SPACE.repeat(fill)
 }
 
-/**
- * Wrap one cell to a column width, preferring a break at the last space so
- * Latin words stay whole; CJK has no spaces and breaks anywhere.
- */
-function wrapToWidth(text, width) {
-  const source = String(text ?? '')
-  if (displayWidth(source) <= width) return [source]
+/** Wrap one cell on grapheme boundaries, preferring a break at a space. */
+function wrapFullwidth(text, width) {
+  const units = graphemes(text)
+  if (units.length <= width) return [units.join('')]
   const lines = []
-  let line = ''
-  let used = 0
-  for (const ch of source) {
-    const w = charWidth(ch.codePointAt(0))
-    if (used + w > width && line) {
-      const space = line.lastIndexOf(' ')
+  let line = []
+  for (const unit of units) {
+    if (line.length >= width) {
+      const space = line.lastIndexOf(FULLWIDTH_SPACE)
       if (space > 0) {
-        lines.push(line.slice(0, space))
+        lines.push(line.slice(0, space).join(''))
         line = line.slice(space + 1)
       } else {
-        lines.push(line)
-        line = ''
+        lines.push(line.join(''))
+        line = []
       }
-      used = displayWidth(line)
+      // A space at the start of a continuation line would look like padding.
+      while (line[0] === FULLWIDTH_SPACE) line.shift()
     }
-    line += ch
-    used += w
+    if (line.length === 0 && unit === FULLWIDTH_SPACE) continue
+    line.push(unit)
   }
-  if (line) lines.push(line)
+  if (line.length) lines.push(line.join(''))
   return lines.length ? lines : ['']
 }
 
 /**
- * Content widths for the grid, capped so the frame stays inside `maxWidth`.
- * Returns null when even the minimum widths cannot fit — the caller falls back
- * to pipe rows rather than drawing a grid that overflows the viewport.
+ * Content widths in fullwidth characters, capped so the frame stays inside
+ * `maxChars`. Returns null when even one character per column cannot fit, so
+ * the caller can fall back to pipe rows instead of overflowing the viewport.
  */
-function columnWidths(rows, columns, maxWidth) {
+function columnWidths(rows, columns, maxChars) {
   const widths = Array.from({ length: columns }, (_, i) => {
-    let width = TABLE_MIN_COL_WIDTH
-    for (const row of rows) width = Math.max(width, displayWidth(row[i] ?? ''))
-    return Math.min(width, TABLE_MAX_COL_WIDTH)
+    let width = 1
+    for (const row of rows) width = Math.max(width, charCount(row[i] ?? ''))
+    return Math.min(width, TABLE_MAX_COL_CHARS)
   })
-  const frame = columns + 1 + columns * 2
+  const frame = columns + 1
   let content = widths.reduce((sum, width) => sum + width, 0)
-  while (content + frame > maxWidth) {
+  while (content + frame > maxChars) {
     let widest = 0
     for (let i = 1; i < widths.length; i += 1) {
       if (widths[i] > widths[widest]) widest = i
     }
-    if (widths[widest] <= TABLE_MIN_COL_WIDTH) return null
+    if (widths[widest] <= 1) return null
     widths[widest] -= 1
     content -= 1
   }
@@ -460,40 +461,40 @@ function columnWidths(rows, columns, maxWidth) {
 }
 
 /**
- * Draw the table as a box inside a ```text fence.
+ * Draw the table as a fullwidth grid inside a ```text fence.
  *
- * A monospace cell is not a pixel unit, so wide glyphs can still drift by a
- * fraction of a cell; the borders only line up as long as every line is padded
- * by measured display width, which is exactly what this does.
+ * There is no space between a cell's content and its borders: the border is the
+ * only separator, which keeps the grid narrow enough for a phone. Alignment
+ * still relies on fullwidth padding at the end of short cells, and that works
+ * on every client because all glyphs come from the same CJK font.
  */
-function renderAsciiTable(header, aligns, rows, { maxRows, maxWidth }) {
-  const headerCells = header.map((cell) => plainCellText(cell))
+function renderFullwidthTable(header, aligns, rows, { maxRows, maxChars }) {
+  const headerCells = header.map((cell) => toFullwidth(plainCellText(cell)))
   const columns = headerCells.length
   const shown = rows
     .slice(0, maxRows)
-    .map((row) => headerCells.map((_, i) => plainCellText(row[i] ?? '')))
-  const widths = columnWidths([headerCells, ...shown], columns, maxWidth)
-  if (!widths) return renderRecordTable(headerCells, rows, maxRows)
+    .map((row) => headerCells.map((_, i) => toFullwidth(plainCellText(row[i] ?? ''))))
+  const widths = columnWidths([headerCells, ...shown], columns, maxChars)
+  if (!widths) return null
 
-  const border = (left, mid, right) =>
-    left + widths.map((width) => '─'.repeat(width + 2)).join(mid) + right
-  const lines = [border('┌', '┬', '┐')]
+  const rule = () => '＋' + widths.map((width) => '－'.repeat(width)).join('＋') + '＋'
+  const lines = [rule()]
 
   const pushRow = (cells) => {
-    const wrapped = cells.map((cell, i) => wrapToWidth(cell, widths[i]))
+    const wrapped = cells.map((cell, i) => wrapFullwidth(cell, widths[i]))
     const height = Math.max(...wrapped.map((cell) => cell.length), 1)
     for (let line = 0; line < height; line += 1) {
-      const parts = wrapped.map(
-        (cellLines, i) => ` ${padDisplay(cellLines[line] ?? '', widths[i], aligns[i])} `,
+      const parts = wrapped.map((cellLines, i) =>
+        padFullwidth(cellLines[line] ?? '', widths[i], aligns[i]),
       )
-      lines.push(`│${parts.join('│')}│`)
+      lines.push(`｜${parts.join('｜')}｜`)
     }
   }
 
   pushRow(headerCells)
-  lines.push(border('├', '┼', '┤'))
+  lines.push(rule())
   for (const row of shown) pushRow(row)
-  lines.push(border('└', '┴', '┘'))
+  lines.push(rule())
 
   const block = ['```text', ...lines, '```'].join('\n')
   const clipped = rows.length > maxRows ? `\n… 另有 ${rows.length - maxRows} 行` : ''
@@ -501,17 +502,18 @@ function renderAsciiTable(header, aligns, rows, { maxRows, maxWidth }) {
 }
 
 /**
- * Fallback for a table that cannot be drawn inside `maxWidth`: raw `|` rows
+ * Fallback for a table that cannot be drawn inside `maxChars`: raw `|` rows
  * with a bolded header, which survive every client even without alignment.
  */
 function renderRecordTable(header, rows, maxRows) {
   const lines = []
-  if (header.some(Boolean)) {
-    lines.push(header.map((cell) => (cell ? `**${cell}**` : '')).join(' | '))
+  const headerCells = header.map((cell) => plainCellText(cell))
+  if (headerCells.some(Boolean)) {
+    lines.push(headerCells.map((cell) => (cell ? `**${cell}**` : '')).join(' | '))
   }
   const escape = (cell) => plainCellText(cell).replace(/\|/g, '\\|')
   for (const row of rows.slice(0, maxRows)) {
-    lines.push(header.map((_, i) => escape(row[i] ?? '')).join(' | '))
+    lines.push(headerCells.map((_, i) => escape(row[i] ?? '')).join(' | '))
   }
   if (rows.length > maxRows) lines.push(`… 另有 ${rows.length - maxRows} 行`)
   return lines.join('\n')
