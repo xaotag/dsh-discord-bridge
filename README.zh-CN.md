@@ -156,6 +156,23 @@ embed。答案卡片原地编辑，长任务下历史不丢失。
 其余工具只显示工具名。参数值——命令、URL、prompt——一律不渲染；过长的路径
 会截成 `…/src/file.js` 形式。
 
+### 卡片页脚
+
+每张完成/停止/失败卡片的页脚由若干小字段拼成，顺序固定：
+
+```text
+模型 (effort) · 耗时 1m30s · 缓存 87% · 上下文 42.0k/128k (33%) · 共调用 5 次工具，用时 1m30s
+```
+
+| 字段 | 来源 | 算法 |
+|---|---|---|
+| 缓存命中率 | `tokenUsage` 投影（本 Session 累计，精确值） | `cacheRead / (uncachedInput + cacheRead + cacheWrite)`，取整到百分比 |
+| 上下文占用 | `contextPressure` 投影 | 优先 `projectedTokens`（下一次请求的 prompt 大小，含本轮回写），退回 `pressureTokens`（最近一次请求的 prompt）；有 `contextWindow` 时附上限与百分比 |
+| 耗时 | 本轮墙钟时间 | — |
+| 工具行 | 本轮工具调用 | 只显示次数与总耗时 |
+
+两个投影都由 token-meter 按 Session 事件流累加，桥接只读不写：读不到（旧版本、轮次尚未产生用量）时该字段直接省略，不显示估算值。数字格式：`999`、`42.0k`、`128k`、`1.1M`。
+
 ### Markdown 适配（Components V2）
 
 所有卡片使用 **Components V2** 的 Text Display 组件渲染，它支持**完整 Markdown

@@ -836,6 +836,81 @@ test('separators divide body from footer', async () => {
   assert.ok(kinds.includes(14), 'a separator is emitted before the footer')
 })
 
+test('usage footer reports the session cache hit rate and context occupancy', async () => {
+  const { formatUsage } = await import('../src/discord/cards-v2.js')
+  assert.equal(
+    formatUsage({
+      cacheReadTokens: 87_000,
+      uncachedInputTokens: 13_000,
+      cacheWriteTokens: 0,
+      projectedTokens: 42_000,
+      contextWindow: 128_000,
+    }),
+    '缓存 87% · 上下文 42.0k/128k (33%)',
+  )
+  // Nothing billed yet: no footer bits rather than a made-up zero.
+  assert.equal(formatUsage({ cacheReadTokens: 0, uncachedInputTokens: 0 }), '')
+  // A route that advertises no capacity still shows what is used.
+  assert.equal(formatUsage({ projectedTokens: 900 }), '上下文 900')
+  // Pressure is the fallback when the projected figure is unavailable.
+  assert.equal(formatUsage({ pressureTokens: 1_100_000, contextWindow: 2_000_000 }), '上下文 1.1M/2.0M (55%)')
+})
+
+test('usage snapshot merges the session projections and tolerates absence', async () => {
+  const { AgentService } = await import('../src/bridge/agent-service.js')
+  const make = (snapshot, hasService = true) =>
+    new AgentService({
+      ctx: {
+        on: () => () => {},
+        get: (name) => (hasService && name === 'sessionProjections' ? { snapshot: () => snapshot } : undefined),
+      },
+      config: {},
+      state: {},
+      logger: { warn() {} },
+    })
+  const payload = {
+    values: {
+      tokenUsage: {
+        cacheReadTokens: 90,
+        uncachedInputTokens: 10,
+        outputTokens: 5,
+        cacheWriteTokens: 0,
+      },
+      contextPressure: { projectedTokens: 1000, contextWindow: 8000 },
+    },
+  }
+  assert.deepEqual(make(payload).usageSnapshot({}), {
+    cacheReadTokens: 90,
+    uncachedInputTokens: 10,
+    outputTokens: 5,
+    cacheWriteTokens: 0,
+    projectedTokens: 1000,
+    contextWindow: 8000,
+  })
+  assert.equal(make({ values: {} }).usageSnapshot({}), undefined, 'no projection data yet')
+  assert.equal(make(undefined, false).usageSnapshot({}), undefined, 'token-meter not mounted')
+  assert.equal(make(payload).usageSnapshot(undefined), undefined, 'no session')
+})
+
+test('the answer footer carries usage when the provider reported it', async () => {
+  const { finalCard } = await import('../src/discord/cards-v2.js')
+  const payload = finalCard('正文', 'completed', {
+    startedAt: Date.now() - 5000,
+    model: 'deepseek-flash',
+    usage: {
+      cacheReadTokens: 9000,
+      uncachedInputTokens: 1000,
+      projectedTokens: 64_000,
+      contextWindow: 128_000,
+    },
+  })
+  const texts = flattenTexts(payload.components)
+  const footer = texts[texts.length - 1]
+  assert.match(footer, /deepseek-flash/)
+  assert.match(footer, /缓存 90%/)
+  assert.match(footer, /上下文 64\.0k\/128k \(50%\)/)
+})
+
 test('approval card nests buttons inside the container', async () => {
   const { approvalCard } = await import('../src/discord/cards-v2.js')
   const payload = approvalCard({

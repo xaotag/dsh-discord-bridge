@@ -246,7 +246,7 @@ export class StreamReporter {
     await this.toolFlushing
   }
 
-  async finish(text, status = 'completed') {
+  async finish(text, status = 'completed', usage) {
     if (this.closed) return
     this.closed = true
     this.stopButtonId = undefined
@@ -264,6 +264,7 @@ export class StreamReporter {
       startedAt: this.startedAt,
       model: this.model,
       reasoningEffort: this.reasoningEffort,
+      usage,
       caption: this.toolCount > 0 ? `共调用 ${this.toolCount} 次工具，用时 ${formatDuration(elapsed)}` : undefined,
       tools: this.tools,
     })
