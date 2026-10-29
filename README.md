@@ -176,7 +176,7 @@ model (effort) · 1m30s · cache 87% · context 42.0k/128k (33%) · 5 tool calls
 
 | Field | Source | Rule |
 |---|---|---|
-| Cache hit rate | `tokenUsage` projection (per session, exact) | `cacheRead / (uncachedInput + cacheRead + cacheWrite)`; rounded, except at 99.5% and above where one decimal is kept (99.546% prints as 99.5%, not a fake 100%) |
+| Cache hit rate | the newest request's buckets in the `tokenUsage` projection — the provider-reported figure the official console shows; falls back to the session total when that step has no sample | `cacheRead / (uncachedInput + cacheRead + cacheWrite)`; rounded, except at 99.5% and above where one decimal is kept (99.85% prints 99.9%, not a fake 100%) |
 | Context occupancy | `contextPressure` projection | `projectedTokens` (what the next prompt would cost, including this turn's output), falling back to `pressureTokens` (newest request prompt); the window and a percentage are appended when the route advertised one |
 | Elapsed | wall clock of the turn | — |
 | Tool line | calls made this turn | count and total duration only |

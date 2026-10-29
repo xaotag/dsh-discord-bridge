@@ -578,14 +578,15 @@ function footerBits({ startedAt, model, reasoningEffort, caption, usage } = {}) 
 /**
  * Footer readout for provider-reported usage.
  *
- * `cacheReadTokens` and `uncachedInputTokens` are the session's cumulative exact
- * accounting, so the ratio is the cache hit rate over everything this
- * conversation has sent. `projectedTokens` is what the next request's prompt
- * would cost, which is the number that actually answers "how full is the
- * context"; `pressureTokens` is the newest provider sample before the current
- * turn's own output.
+ * The cache hit rate comes from `request`, the newest billed request's own
+ * buckets — the official per-call figure — and falls back to the session
+ * cumulative buckets when the last step recorded none. `projectedTokens` is
+ * what the next request's prompt would cost, which is the number that actually
+ * answers "how full is the context"; `pressureTokens` is the newest provider
+ * sample before the current turn's own output.
  */
 export function formatUsage({
+  request,
   cacheReadTokens,
   uncachedInputTokens,
   cacheWriteTokens,
@@ -594,12 +595,18 @@ export function formatUsage({
   contextWindow,
 } = {}) {
   const bits = []
-  const cacheRead = Number.isFinite(cacheReadTokens) ? cacheReadTokens : undefined
+  // A request-level sample wins: the official hit rate is per API call, and a
+  // session average smooths out exactly the number being asked about.
+  const source =
+    request && Number.isFinite(request.cacheReadTokens)
+      ? request
+      : { cacheReadTokens, uncachedInputTokens, cacheWriteTokens }
+  const cacheRead = Number.isFinite(source.cacheReadTokens) ? source.cacheReadTokens : undefined
   if (cacheRead !== undefined) {
     const prompt =
       cacheRead +
-      (Number.isFinite(uncachedInputTokens) ? uncachedInputTokens : 0) +
-      (Number.isFinite(cacheWriteTokens) ? cacheWriteTokens : 0)
+      (Number.isFinite(source.uncachedInputTokens) ? source.uncachedInputTokens : 0) +
+      (Number.isFinite(source.cacheWriteTokens) ? source.cacheWriteTokens : 0)
     if (prompt > 0) {
       const rate = (cacheRead / prompt) * 100
       // A cumulative rate sits just under 100% once the prefix is cached; a
