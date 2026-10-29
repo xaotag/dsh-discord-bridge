@@ -6,8 +6,56 @@
  */
 import { APPROVE_BUTTON_PREFIX, REJECT_BUTTON_PREFIX } from '../../discord/renderer.js'
 import { ACCENT, approvalCard, decidedApprovalCard } from '../../discord/cards-v2.js'
+import { fallbackLabel } from '../session-tree.js'
 import { DELEGATE } from '../runtime.js'
 import { startCountdown } from './countdown.js'
+
+/**
+ * Channel that owns an asking Agent, plus its subagent identity when it is one.
+ *
+ * `resolveAgent` is the tree-aware seam provided by AgentService. When it is
+ * absent (or the Agent is not in the tree) fall back to the old identity match,
+ * so the root-Agent behaviour is exactly what it was before SessionTree existed.
+ * A missing seam must never make a request unanswerable.
+ */
+export function resolveRequestAgent(agents, agent) {
+  let entry
+  try {
+    if (typeof agents?.resolveAgent === 'function') entry = agents.resolveAgent(agent)
+    else if (typeof agents?.tree?.resolve === 'function') entry = agents.tree.resolve(agent)
+  } catch {
+    entry = undefined
+  }
+  // The seam may hand back a bare channel id in a minimal implementation.
+  if (typeof entry === 'string') entry = { channelId: entry }
+  const rawChild = entry?.child
+  const depth = Number.isFinite(rawChild?.depth)
+    ? rawChild.depth
+    : Number.isFinite(entry?.depth)
+      ? entry.depth
+      : 0
+  const sessionId = rawChild?.id ?? rawChild?.sessionId ?? entry?.sessionId ?? entry?.childSessionId ?? entry?.id
+  const channelId =
+    entry?.channelId ?? rawChild?.channelId ?? entry?.channel ?? entry?.key ?? agents?.channelForAgent?.(agent)
+  if (!channelId) return { channelId: undefined, child: undefined }
+  if (depth <= 0 && !rawChild) return { channelId, child: undefined }
+  return {
+    channelId,
+    child: {
+      sessionId,
+      depth,
+      label: rawChild?.label ?? entry?.label ?? fallbackLabel(sessionId),
+    },
+  }
+}
+
+/**
+ * Audit fields for a request that came from a child. Never carries content:
+ * only the child Session id and its depth are metadata.
+ */
+function childAudit(child) {
+  return child ? { childSessionId: child.sessionId, depth: child.depth } : {}
+}
 
 /**
  * Post a confirmation card and await the decision.
@@ -95,7 +143,7 @@ export function approvalOutcome(decision) {
  */
 export async function answerApprovalRequest(runtime, request) {
   const { agents, approvals, transport, audit, logger } = runtime
-  const channelId = agents.channelForAgent(request?.agent)
+  const { channelId, child } = resolveRequestAgent(agents, request?.agent)
   if (!channelId) return DELEGATE
 
   const entry = approvals.create({ channelId, description: request?.reason })
@@ -105,7 +153,8 @@ export async function answerApprovalRequest(runtime, request) {
     status: 'ok',
     channelId,
     conversation: channelId,
-    detail: { requestId: entry.id, toolName: request?.toolName },
+    sessionId: child?.sessionId,
+    detail: { requestId: entry.id, toolName: request?.toolName, ...childAudit(child) },
   })
 
   const build = () =>
@@ -116,6 +165,7 @@ export async function answerApprovalRequest(runtime, request) {
       expiresAt: entry.expiresAt,
       approvePrefix: APPROVE_BUTTON_PREFIX,
       rejectPrefix: REJECT_BUTTON_PREFIX,
+      child,
     })
 
   let stopCountdown = () => {}
@@ -143,7 +193,8 @@ export async function answerApprovalRequest(runtime, request) {
       status: 'ok',
       channelId,
       conversation: channelId,
-      detail: { requestId: entry.id, decision, toolName: request?.toolName },
+      sessionId: child?.sessionId,
+      detail: { requestId: entry.id, decision, toolName: request?.toolName, ...childAudit(child) },
     })
 
     // A click already rewrote the card through the interaction; only a timeout

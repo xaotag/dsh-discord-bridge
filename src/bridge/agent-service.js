@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { UNTRUSTED_INPUT_POLICY } from './untrusted.js'
 import { listModels, listReasoningEfforts } from './agent-catalog.js'
+import { SessionTree } from './session-tree.js'
+
+/** How long a finished turn waits for delegated children by default. */
+const DEFAULT_SUBAGENT_SETTLE_MS = 120 * 1000
+
+/** Poll interval used while waiting for children to finish. */
+const SETTLE_POLL_MS = 250
 
 /**
  * DSH Agent / model interaction module.
@@ -18,6 +25,16 @@ export class AgentService {
     this.audit = audit
     this.runtimes = new Map()
     this.disposed = false
+    // Lineage of every Session observed under a bridge conversation. Identity
+    // matching on `runtime.agent` cannot see delegated Agents at all, so the
+    // tree is what lets their requests and events find the owning channel.
+    this.tree = new SessionTree()
+    // childSessionId -> conversation key, for children between their start and
+    // their turn end. settleChildren() waits on this; the tree alone keeps
+    // ended children forever.
+    this.activeSubagents = new Map()
+    // Pending settleChildren() resolvers, so dispose() can unblock them.
+    this.settleWaiters = new Set()
     this.disposeStream = ctx.on('agent/assistant-stream', (payload) => this.observeStream(payload))
     this.disposeSession = ctx.on('session/event', (session, event) => this.observeSession(session, event))
     this.disposeAgent = ctx.on('agent/disposed', (payload) => this.observeDisposed(payload))
@@ -36,7 +53,28 @@ export class AgentService {
     for (const [key, runtime] of this.runtimes) {
       if (runtime?.agent === agent || runtime?.handle?.agent === agent) return runtime.channelId || key
     }
-    return undefined
+    // A delegated Agent is a different object from the root agent held by the
+    // runtime, so the identity loop above always misses it. The tree knows
+    // which root session owns the child; when lineage cannot be followed the
+    // request stays unowned instead of being guessed onto some channel.
+    const entry = this.tree.resolve(agent)
+    if (!entry) return undefined
+    return this.runtimes.get(entry.key)?.channelId
+  }
+
+  /**
+   * Conversation entry ({ key, depth, label, … }) for an Agent or Session.
+   *
+   * Exposed for the interaction layer: it needs the child's label/depth to
+   * title an approval or question card, and `undefined` keeps the root wording.
+   */
+  resolveAgent(agent) {
+    return this.tree.resolve(agent)
+  }
+
+  /** Children of one conversation that resolve to a depth above the root. */
+  subagentCount(key) {
+    return this.tree.childrenOf(key).filter((node) => (node.depth ?? 0) > 0).length
   }
 
   runtime(key, meta = {}) {
@@ -301,6 +339,7 @@ export class AgentService {
       const live = this.ctx.agents.get(saved)
       if (live) {
         runtime.agent = live
+        this.tree.attachRoot(runtime.key, live.session)
         this.installSelection(live.ctx, runtime)
         this.logger.log?.(`绑定已存在 live session ${saved}`)
         return live
@@ -315,6 +354,7 @@ export class AgentService {
         await handle.agent.whenIdle()
         runtime.handle = handle
         runtime.agent = handle.agent
+        this.tree.attachRoot(runtime.key, handle.agent.session)
         this.audit?.record({
           category: 'agent',
           action: 'resume',
@@ -356,6 +396,7 @@ export class AgentService {
       await this.state.setSessionId(runtime.key, sessionId)
       runtime.handle = handle
       runtime.agent = handle.agent
+      this.tree.attachRoot(runtime.key, handle.agent.session)
       this.audit?.record({
         category: 'agent',
         action: 'create',
@@ -390,6 +431,10 @@ export class AgentService {
       runtime.handle = undefined
       runtime.agent = undefined
       runtime.sink = undefined
+      // Nothing under this Session can reach a conversation any more, and a
+      // settled child must not keep reporting as running on a future card.
+      this.tree.detachRoot(runtime.key)
+      this.#forgetSubagents(runtime.key)
       try {
         runtime.selectionDispose?.()
       } catch {
@@ -445,6 +490,21 @@ export class AgentService {
       try {
         agent.followup(makeUserMessage(greeting ? greetingPrompt(text) : text, { images }))
         await agent.whenIdle()
+        // A delegated child can outlive the parent turn (background delivery or
+        // a blocked approval). Give the card a bounded window to keep showing it
+        // instead of freezing the answer while the child is still running. A
+        // timeout is reported in the audit, never thrown: the parent turn is
+        // already complete.
+        const settleMs = this.config.subagentSettleMs ?? DEFAULT_SUBAGENT_SETTLE_MS
+        const settled =
+          settleMs > 0
+            ? await this.settleChildren(runtime.key, { timeoutMs: settleMs })
+            : { settled: true, remaining: 0 }
+        if (!settled.settled) {
+          this.logger.warn?.(
+            `子代理在 ${settleMs}ms 内未结束，剩余 ${settled.remaining} 个；父回复继续`,
+          )
+        }
         try {
           await this.ctx.get('sessions')?.flush?.(agent.session)
         } catch (error) {
@@ -463,7 +523,10 @@ export class AgentService {
           conversation: runtime.key,
           sessionId: agent.id,
           durationMs: Date.now() - startedAt,
-          detail: { replyLength: finalText.trim().length },
+          detail: {
+            replyLength: finalText.trim().length,
+            ...(settled.settled ? {} : { subagentRemaining: settled.remaining }),
+          },
         })
         return { text: finalText.trim(), status: runtime.status, usage: this.usageSnapshot(agent.session) }
       } catch (error) {
@@ -612,7 +675,11 @@ export class AgentService {
   observeStream({ agent, frame }) {
     if (!agent || !frame) return
     const runtime = findRuntime(this.runtimes, agent)
-    if (!runtime?.sink) return
+    if (!runtime) {
+      this.observeSubagentStream(agent, frame)
+      return
+    }
+    if (!runtime.sink) return
     if (frame.type === 'start') {
       runtime.streamText = ''
       return
@@ -627,9 +694,43 @@ export class AgentService {
     }
   }
 
+  /**
+   * Streaming half of subagent observation.
+   *
+   * Child text is forwarded as a sink event only. It must never touch the root
+   * runtime's `streamText`: that buffer is the parent's final answer, and mixing
+   * a child's narration into it would present delegated work as the parent's.
+   */
+  observeSubagentStream(agent, frame) {
+    const entry = this.tree.resolve(agent)
+    if (!entry || entry.depth === 0) return
+    const runtime = this.runtimes.get(entry.key)
+    if (!runtime?.sink) return
+    if (frame.type !== 'chunk' || frame.chunk?.type !== 'text-delta') return
+    this.activeSubagents.set(entry.sessionId, entry.key)
+    runtime.sink.onSubagentEvent?.({
+      kind: 'text',
+      child: { id: entry.sessionId, label: entry.label, depth: entry.depth },
+      text: frame.chunk.text,
+    })
+  }
+
   observeSession(session, event) {
-    const runtime = [...this.runtimes.values()].find((item) => item.agent?.session === session)
+    if (!session?.id) return
+    this.tree.note(session)
+    const entry = this.tree.resolve(session)
+    if (event?.type === 'subagent/catalog') {
+      this.observeCatalog(session, event.data, entry)
+      return
+    }
+    if (!entry) return
+    const runtime = this.runtimes.get(entry.key)
     if (!runtime) return
+    if (entry.depth > 0) {
+      this.observeSubagentEvent(runtime, entry, event)
+      return
+    }
+    // Root events keep their existing audit and sink contract unchanged.
     if (event.type === 'tool/call') {
       this.audit?.record({
         category: 'tool',
@@ -656,6 +757,103 @@ export class AgentService {
     } else if (event.type === 'turn/end') {
       const kind = event.data?.reason?.kind
       runtime.status = kind === 'aborted' ? 'cancelled' : kind === 'completed' ? 'completed' : 'failed'
+    }
+  }
+
+  /**
+   * `subagent/catalog` is emitted on the *parent* Session and is the only place
+   * DSH names a child. Recording it lets cards show a label instead of an id.
+   */
+  observeCatalog(session, data, parentEntry) {
+    const childId = data?.childId ?? data?.id
+    if (!childId) return
+    this.tree.learnChild(session.id, data)
+    const entry = this.tree.resolve({ id: childId })
+    if (!entry || entry.depth === 0) return
+    this.activeSubagents.set(childId, entry.key)
+    const runtime = this.runtimes.get(parentEntry?.key ?? entry.key)
+    runtime?.sink?.onSubagentEvent?.({
+      kind: 'child-start',
+      child: { id: childId, label: entry.label, depth: entry.depth },
+    })
+  }
+
+  /**
+   * Child tool/turn events feed the card, not the audit.
+   *
+   * Writing them into the parent conversation's audit rows would attribute a
+   * child's tool calls to the parent turn; the presentation layer counts them
+   * through the sink instead.
+   */
+  observeSubagentEvent(runtime, entry, event) {
+    const child = { id: entry.sessionId, label: entry.label, depth: entry.depth }
+    if (event.type === 'tool/call') {
+      this.activeSubagents.set(entry.sessionId, entry.key)
+      runtime.sink?.onSubagentEvent?.({
+        kind: 'tool-call',
+        child,
+        name: event.data?.name,
+        args: event.data?.arguments,
+      })
+    } else if (event.type === 'tool/result') {
+      this.activeSubagents.set(entry.sessionId, entry.key)
+      runtime.sink?.onSubagentEvent?.({ kind: 'tool-result', child, result: event.data })
+    } else if (event.type === 'turn/end') {
+      this.activeSubagents.delete(entry.sessionId)
+      const kind = event.data?.reason?.kind
+      const status = kind === 'aborted' ? 'cancelled' : kind === 'completed' ? 'completed' : 'failed'
+      runtime.sink?.onSubagentEvent?.({ kind: 'turn-end', child, status })
+    }
+  }
+
+  /**
+   * Wait until the delegated children of one conversation have ended.
+   *
+   * Bounded by `timeoutMs` and never rejects: a child stuck on an approval must
+   * not keep the parent turn (and its card) open forever.
+   */
+  settleChildren(key, { timeoutMs = this.config.subagentSettleMs ?? DEFAULT_SUBAGENT_SETTLE_MS } = {}) {
+    const limit = Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_SUBAGENT_SETTLE_MS
+    const remaining = () => this.activeSubagentCount(key)
+    if (this.disposed || limit <= 0 || remaining() === 0) {
+      return Promise.resolve({ settled: remaining() === 0, remaining: remaining() })
+    }
+    return new Promise((resolve) => {
+      const deadline = Date.now() + limit
+      let timer
+      const finish = () => {
+        if (timer) clearTimeout(timer)
+        this.settleWaiters.delete(finish)
+        const left = remaining()
+        resolve({ settled: left === 0, remaining: left })
+      }
+      const tick = () => {
+        if (this.disposed || remaining() === 0 || Date.now() >= deadline) {
+          finish()
+          return
+        }
+        timer = setTimeout(tick, Math.min(SETTLE_POLL_MS, Math.max(0, deadline - Date.now())))
+        // A wait must never hold the process open on its own.
+        timer.unref?.()
+      }
+      this.settleWaiters.add(finish)
+      timer = setTimeout(tick, Math.min(SETTLE_POLL_MS, limit))
+      timer.unref?.()
+    })
+  }
+
+  /** Running children of one conversation, used by settleChildren(). */
+  activeSubagentCount(key) {
+    let count = 0
+    for (const childKey of this.activeSubagents.values()) {
+      if (childKey === key) count += 1
+    }
+    return count
+  }
+
+  #forgetSubagents(key) {
+    for (const [childId, childKey] of [...this.activeSubagents]) {
+      if (childKey === key) this.activeSubagents.delete(childId)
     }
   }
 
@@ -743,10 +941,16 @@ export class AgentService {
   observeDisposed(payload) {
     const agent = payload?.agent
     if (!agent) return
+    // A disposed child can no longer produce a turn/end, so it must not keep
+    // a parent turn waiting for the whole settle budget.
+    const childId = agent.session?.id
+    if (childId) this.activeSubagents.delete(childId)
     for (const runtime of this.runtimes.values()) {
       if (runtime.agent !== agent) continue
       runtime.agent = undefined
       runtime.handle = undefined
+      this.tree.detachRoot(runtime.key)
+      this.#forgetSubagents(runtime.key)
       this.logger.log?.(`检测到 Session ${agent.id} 已销毁，频道 ${runtime.key} 下次消息将重新恢复`)
     }
   }
@@ -794,6 +998,10 @@ export class AgentService {
   async dispose() {
     if (this.disposed) return
     this.disposed = true
+    // Unblock any run() still waiting on settleChildren(); shutdown must not
+    // wait out the settle timeout.
+    for (const finish of [...this.settleWaiters]) finish()
+    this.settleWaiters.clear()
     try {
       this.disposeStream?.()
     } catch {
@@ -812,6 +1020,8 @@ export class AgentService {
     const active = [...this.runtimes.values()]
     this.runtimes.clear()
     await Promise.allSettled(active.map((runtime) => this.releaseRuntime(runtime)))
+    this.tree.clear()
+    this.activeSubagents.clear()
   }
 }
 

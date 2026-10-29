@@ -41,6 +41,12 @@ function positiveNumber(value, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback
 }
 
+/** Zero is meaningful here ("do not wait"), unlike for the other timings. */
+function nonNegativeNumber(value, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
 export function loadEnvFile(file) {
   const filename =
     file ||
@@ -139,6 +145,14 @@ export function resolveConfig(raw = {}) {
       1,
       Math.floor(positiveNumber(raw.maxLiveSessions ?? process.env.DSH_DISCORD_MAX_LIVE_SESSIONS, 8)),
     ),
+    // How long a finished turn keeps its card open for delegated children that
+    // are still running. A child may outlive the parent turn (background
+    // delivery); without this the parent card reports "完成" while a subagent is
+    // still asking for approvals. 0 disables the wait.
+    subagentSettleMs: nonNegativeNumber(
+      raw.subagentSettleMs ?? process.env.DSH_DISCORD_SUBAGENT_SETTLE_MS,
+      120 * 1000,
+    ),
     autoThread: boolValue(raw.autoThread ?? process.env.DSH_DISCORD_AUTO_THREAD, true),
     complexityThreshold: Math.max(
       1,
@@ -164,4 +178,4 @@ export function authorized(config, userId, guildId, channelId) {
   return true
 }
 
-export { listValue, boolValue, nonEmpty, positiveNumber }
+export { listValue, boolValue, nonEmpty, positiveNumber, nonNegativeNumber }

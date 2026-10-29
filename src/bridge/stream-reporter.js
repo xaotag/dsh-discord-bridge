@@ -1,6 +1,7 @@
 import { STOP_BUTTON_PREFIX, formatDuration, progressCaption } from '../discord/renderer.js'
 import {
   ACCENT,
+  describeTool,
   finalCard,
   placeholderCard,
   streamCard,
@@ -14,6 +15,12 @@ const QUIET_CAPTION_THRESHOLD_MS = 8000
 /** Above this aggregated size each extra 1000 chars adds this much interval (capped). */
 const LENGTH_BACKOFF_STEP = 4000
 const LENGTH_BACKOFF_MAX_MULTIPLIER = 3
+
+/** How much of a child's latest line a card row can show. */
+const SUBAGENT_SUMMARY_MAX = 40
+
+/** Catalog labels are model-authored and unbounded; the row is one line. */
+const SUBAGENT_LABEL_MAX = 24
 
 /**
  * Presentation-only streaming reporter.
@@ -55,6 +62,10 @@ export class StreamReporter {
     /** Index in tools of the call currently running, or undefined. */
     this.activeTool = undefined
     this.toolCount = 0
+    /** Child sessions seen under this turn, keyed by child Session id. */
+    this.subagents = new Map()
+    /** How many of them are still running; drives the caption and footer. */
+    this.subagentRunning = 0
     this.lastTextAt = Date.now()
     /** custom_id of the live stop button; cleared once the turn is over. */
     this.stopButtonId = undefined
@@ -94,6 +105,80 @@ export class StreamReporter {
     if (this.closed || !delta) return
     this.reasoning += delta
     if (this.showReasoning) this.schedule()
+  }
+
+  /**
+   * Single entry point for subagent activity forwarded by AgentService.
+   *
+   * The parent turn owns the card, so children never get their own message and
+   * their streaming prose never joins the parent answer: each child contributes
+   * at most one row (latest tool + its description) to a small-print block.
+   * `child-start` is accepted as an alias of `start` because the sink contract
+   * and the event observer do not have to agree on a name.
+   */
+  onSubagentEvent(event) {
+    if (this.closed || !event) return
+    const child = event.child ?? {}
+    const id = String(child.id ?? event.childId ?? '')
+    if (!id) return
+
+    let entry = this.subagents.get(id)
+    if (!entry) {
+      entry = {
+        id,
+        label: trimSubagentLabel(child.label) || fallbackSubagentLabel(id),
+        depth: 0,
+        name: '',
+        description: '',
+        status: 'running',
+        updatedAt: Date.now(),
+        running: true,
+      }
+      this.subagents.set(id, entry)
+    }
+    if (child.label) entry.label = trimSubagentLabel(child.label) || entry.label
+    if (Number.isFinite(child.depth)) entry.depth = child.depth
+    entry.updatedAt = Date.now()
+
+    const kind = String(event.kind ?? '')
+    if (kind === 'child-start' || kind === 'start') {
+      entry.running = true
+      entry.status = 'running'
+    } else if (kind === 'tool-call') {
+      entry.running = true
+      entry.status = 'running'
+      entry.name = String(event.name ?? '').slice(0, 48)
+      // Reuses the parent's privacy rule: description fields only, no arguments.
+      entry.description = describeTool(event.args, entry.name)
+    } else if (kind === 'tool-result') {
+      // One call finishing does not finish the child, so it keeps its ⟳.
+      entry.running = true
+      entry.status = 'running'
+    } else if (kind === 'text') {
+      // Kept as a summary only; it must never enter this.text (parent body).
+      entry.text = summarizeSubagentText(event.text)
+    } else if (kind === 'turn-end') {
+      entry.running = false
+      entry.status = 'completed'
+    } else if (kind === 'end') {
+      entry.running = false
+      entry.status = isFailedStatus(event.status) ? 'failed' : 'completed'
+    }
+
+    this.refreshSubagentRunning()
+    this.schedule()
+  }
+
+  /** Children in the order they were first seen. */
+  subagentList() {
+    return [...this.subagents.values()]
+  }
+
+  /** Recompute the running count after any child state change. */
+  refreshSubagentRunning() {
+    let running = 0
+    for (const entry of this.subagents.values()) if (entry.running) running += 1
+    this.subagentRunning = running
   }
 
   /**
@@ -157,12 +242,16 @@ export class StreamReporter {
     const sinceLastText = Date.now() - this.lastTextAt
     const running = this.activeTool === undefined ? undefined : this.tools[this.activeTool]?.name
     // Without a running call, only a long silence deserves a progress line.
-    if (running === undefined && sinceLastText < QUIET_CAPTION_THRESHOLD_MS) return ''
-    return progressCaption({
-      tools: this.toolCount,
-      toolName: running,
-      sinceLastText,
-    })
+    const quiet = running === undefined && sinceLastText < QUIET_CAPTION_THRESHOLD_MS
+    const base = quiet
+      ? ''
+      : progressCaption({
+          tools: this.toolCount,
+          toolName: running,
+          sinceLastText,
+        })
+    const children = this.subagentRunning > 0 ? `子代理 ${this.subagentRunning} 运行中` : ''
+    return [base, children].filter(Boolean).join(' · ')
   }
 
   buildAnswerPayload() {
@@ -172,6 +261,7 @@ export class StreamReporter {
       reasoningEffort: this.reasoningEffort,
       caption: this.caption(),
       tools: this.tools,
+      subagents: this.subagentList(),
     })
     // The stop button only makes sense while the turn is still running.
     if (!this.closed && this.stopButtonId) {
@@ -212,8 +302,9 @@ export class StreamReporter {
       return
     }
     // Nothing generated yet: keep the untouched placeholder instead of
-    // replacing it with an empty "waiting" card.
-    if (!this.text.trim() && !this.showReasoning) return
+    // replacing it with an empty "waiting" card. Subagent activity is content
+    // too, so a parent with only children running still gets its block drawn.
+    if (!this.text.trim() && !this.showReasoning && this.subagents.size === 0) return
     const payload = this.buildAnswerPayload()
     this.lastEditAt = Date.now()
     this.flushing = this.flushing
@@ -274,6 +365,7 @@ export class StreamReporter {
       accentColor: this.denied ? ACCENT.failed : undefined,
       caption: this.toolCount > 0 ? `共调用 ${this.toolCount} 次工具，用时 ${formatDuration(elapsed)}` : undefined,
       tools: this.tools,
+      subagents: this.subagentList(),
     })
     await this.transport.edit(this.channelId, this.messageId, payload)
   }
@@ -291,6 +383,7 @@ export class StreamReporter {
       startedAt: this.startedAt,
       model: this.model,
       reasoningEffort: this.reasoningEffort,
+      subagents: this.subagentList(),
     })
     if (this.messageId) {
       await this.transport.edit(this.channelId, this.messageId, payload).catch(() => undefined)
@@ -304,4 +397,34 @@ export class StreamReporter {
     await this.flushing.catch(() => undefined)
     await this.toolFlushing.catch(() => undefined)
   }
+}
+
+/** Trim a catalog label to one card row. */
+function trimSubagentLabel(value) {
+  const text = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return ''
+  return text.length <= SUBAGENT_LABEL_MAX ? text : `${text.slice(0, SUBAGENT_LABEL_MAX - 1)}…`
+}
+
+/** Anonymous children are still told apart by a short id prefix. */
+function fallbackSubagentLabel(id) {
+  return `子代理 ${String(id ?? '').slice(0, 6)}`
+}
+
+/** Only the latest line of child prose is kept, and only as a short summary. */
+function summarizeSubagentText(text) {
+  const lines = String(text ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const line = lines.length ? lines[lines.length - 1] : ''
+  return line.length <= SUBAGENT_SUMMARY_MAX ? line : `${line.slice(0, SUBAGENT_SUMMARY_MAX - 1)}…`
+}
+
+/** DSH reports a failed child as `failed` (or a provider-ish `error`). */
+function isFailedStatus(status) {
+  const text = String(status ?? '').toLowerCase()
+  return text === 'failed' || text === 'error'
 }

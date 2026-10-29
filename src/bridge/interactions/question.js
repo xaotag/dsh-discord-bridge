@@ -15,6 +15,7 @@ import {
   questionCustomModal,
 } from '../../discord/cards-v2.js'
 import { DELEGATE } from '../runtime.js'
+import { resolveRequestAgent } from './approval.js'
 import { startCountdown } from './countdown.js'
 
 /** True for a custom_id owned by the question card's select or skip controls. */
@@ -45,9 +46,10 @@ export async function answerUserQuestions(runtime, request) {
   // Only answer for an Agent this bridge owns. Falling back to the most recently
   // active channel would steal questions asked in the Web UI and post them to
   // Discord, where the person asking is not looking — hanging both surfaces.
-  const channelId = agents.channelForAgent(request?.agent)
+  const { channelId, child } = resolveRequestAgent(agents, request?.agent)
   if (!channelId) return DELEGATE
 
+  const childDetail = child ? { childSessionId: child.sessionId, depth: child.depth } : {}
   const entry = registry.create({ questions, channelId })
   audit.record({
     category: 'discord',
@@ -55,7 +57,8 @@ export async function answerUserQuestions(runtime, request) {
     status: 'ok',
     channelId,
     conversation: channelId,
-    detail: { requestId: entry.id, count: questions.length },
+    sessionId: child?.sessionId,
+    detail: { requestId: entry.id, count: questions.length, ...childDetail },
   })
 
   // Countdown stops for every card the moment the request settles, however it
@@ -72,6 +75,7 @@ export async function answerUserQuestions(runtime, request) {
           index,
           total: questions.length,
           expiresAt: entry.expiresAt,
+          child,
         })
       const sent = await transport.send(channelId, build())
       registry.get(entry.id)?.messageIds.push({ index, messageId: sent.messageId })
@@ -99,11 +103,13 @@ export async function answerUserQuestions(runtime, request) {
     status: settled.reason === 'timeout' ? 'expired' : 'ok',
     channelId,
     conversation: channelId,
+    sessionId: child?.sessionId,
     detail: {
       requestId: entry.id,
       reason: settled.reason,
       answered: settled.answers.filter((a) => a.selected.length > 0 || a.custom).length,
       total: settled.answers.length,
+      ...childDetail,
     },
   })
   return { answers: settled.answers }

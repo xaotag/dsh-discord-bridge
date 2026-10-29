@@ -81,6 +81,8 @@ DSH_DISCORD_STREAM_EDIT_INTERVAL_MS=1500
 DSH_DISCORD_AUTO_THREAD=true
 DSH_DISCORD_COMPLEXITY_THRESHOLD=600
 DSH_DISCORD_MAX_RATE_LIMIT_RETRIES=5
+# 子代理：父回合结束后继续等待仍在跑的子代理多久（毫秒，0=不等）
+DSH_DISCORD_SUBAGENT_SETTLE_MS=120000
 # 审计日志
 DSH_DISCORD_AUDIT=true
 DSH_DISCORD_AUDIT_DB=~/.dsh/dsh-discord/audit.sqlite
@@ -264,6 +266,30 @@ DSH_DISCORD_AGENT_PRESET=standard
 > ⚠️ 挂载 `standard` 后 Discord 侧具备 **命令执行与文件读写** 能力。
 > 当前鉴权由 `DSH_DISCORD_OWNER_ID` 白名单限制，请勿在未做权限隔离时放宽白名单。
 
+## 子代理（`subagent` / Team）
+
+DSH 里的 `subagent`、`subagent_fork`、Team 成员都是**独立的 Session**，通过
+`session.header.parentSession` 挂在发起它们的会话下面。桥接把它们当作同一棵会话树：
+
+- 子代理的 `approval/request`、`user-questions/request` 落在**父会话所在频道**，卡片标题
+  标出 `子代理「<label>」`，审计里带 `childSessionId` 与深度——所以子代理不会再"卡在那里
+  等一个没人看得见的授权"。
+- 子代理的工具调用、状态与结束回执以 `-#` 小字块追加在父卡片底部，父答案本身不被子代理
+  的输出污染：
+
+  ```
+  -# 🧩 子代理 1 个运行中
+  -# ↳ 「校验渲染器」⟳ `read` · src/discord/cards-v2.js
+  ```
+
+- 父回合结束时如果子代理仍在跑（后台投递），卡片会继续等 `DSH_DISCORD_SUBAGENT_SETTLE_MS`，
+  超时则如实标注仍有子代理在运行，而不是提前显示"完成"。
+- 子代理的人类可读名字来自父会话日志里的 `subagent/catalog` 事件；没有这条事件时退回
+  `子代理 <id 前 6 位>`。
+- 解析不到归属的请求仍然交给 `next()`（Web answerer 接管），桥接**绝不猜测频道**。
+
+实现见 [`docs/subagent-sessions.md`](docs/subagent-sessions.md)。
+
 ## 上下文与安全
 
 - 默认 `isolation: channel`：按 Channel ID / Thread ID 隔离并持久化 DSH Session。
@@ -338,7 +364,8 @@ DSH 的 `ask_user_question` 会阻塞 agent 直到有人作答。插件注册了
 
 要点：
 
-- 频道由 `request.agent` 反查（`channelForAgent()`），不依赖「最近活跃频道」
+- 频道由 `request.agent` 反查（`channelForAgent()`，会沿会话树向上找到发起方频道），
+  不依赖「最近活跃频道」；子代理的问题也会落到父频道
 - 未打标签的根监听器是全局的，能收到每个 agent 的请求（见 `@deepseek-ai/dsh-scope`）
 - 反查不到频道时交给 `next()`，让 Web answerer 接管
 - 超时（10 分钟）、异常、无频道一律落为「跳过」，**agent 永远不会被永久阻塞**
