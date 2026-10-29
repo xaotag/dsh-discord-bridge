@@ -98,6 +98,20 @@ sink.onSubagentEvent({
 
 单入口、单对象，StreamReporter 与测试都只依赖这一层。
 
+## 呈现：每个子代理一个 Thread
+
+子代理的活动全挤在父卡片上时，两行摘要就到顶了。默认给每个子代理单开一个 Discord 子线程：
+
+- 子代理第一次报事件时，在父频道下建线程 `🧩 <label>`；`createThread` 失败直接退回旧行为；
+- 线程里只有一张卡片，随事件原地刷新：状态图标、最新正文摘要、最近一次工具与描述；
+- 强调色跟着状态走：运行中琥珀、完成绿、失败红；
+- 父卡片的子代理行追加 `🧵 <#threadId>`，点进去就是该子代理的活动；
+- 父频道本身是 Thread 时无法再嵌套，直接沿用父线程，不新建；
+- 开关 `DSH_DISCORD_SUBAGENT_THREADS=false` 关闭，只保留父卡片摘要。
+
+实现：`src/bridge/subagent-threads.js`（`SubagentThreads`），由 `StreamReporter.onSubagentEvent`
+驱动；不 import DSH，不改父答案正文。
+
 ## 兼容与回退
 
 - 根 Agent 行为零变化：解析深度 0，走原路径。

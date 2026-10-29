@@ -153,6 +153,13 @@ export function resolveConfig(raw = {}) {
       raw.subagentSettleMs ?? process.env.DSH_DISCORD_SUBAGENT_SETTLE_MS,
       120 * 1000,
     ),
+    // Give every subagent its own thread so its activity has somewhere to live
+    // instead of competing for the parent card's two lines. Off keeps the
+    // parent-card summary only.
+    subagentThreads: boolValue(
+      raw.subagentThreads ?? process.env.DSH_DISCORD_SUBAGENT_THREADS,
+      true,
+    ),
     autoThread: boolValue(raw.autoThread ?? process.env.DSH_DISCORD_AUTO_THREAD, true),
     complexityThreshold: Math.max(
       1,

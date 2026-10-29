@@ -8,6 +8,7 @@ import {
   withStopRow,
 } from '../discord/cards-v2.js'
 import { isPermissionDenial } from './denial.js'
+import { SubagentThreads } from './subagent-threads.js'
 
 /** Show the "已等待 …" caption only after this much silence. */
 const QUIET_CAPTION_THRESHOLD_MS = 8000
@@ -39,6 +40,7 @@ export class StreamReporter {
     intervalMs = 1500,
     logger = console,
     showReasoning = false,
+    subagentThreads = true,
     existingMessageId,
     model,
     reasoningEffort,
@@ -59,6 +61,9 @@ export class StreamReporter {
     this.tools = []
     /** A refusal (approval or sandbox) turns the finished card red. */
     this.denied = false
+    /** One thread per subagent; created on the first child event. */
+    this.subagentThreadsEnabled = subagentThreads
+    this.subagentCards = undefined
     /** Index in tools of the call currently running, or undefined. */
     this.activeTool = undefined
     this.toolCount = 0
@@ -166,7 +171,29 @@ export class StreamReporter {
     }
 
     this.refreshSubagentRunning()
+    this.ensureSubagentThreads()?.track(entry)
     this.schedule()
+  }
+
+  /**
+   * Lazily create the thread manager: most turns have no subagents at all, and a
+   * thread is only worth opening for a child that actually reports activity.
+   */
+  ensureSubagentThreads() {
+    if (this.subagentCards || !this.subagentThreadsEnabled) return this.subagentCards
+    this.subagentCards = new SubagentThreads({
+      transport: this.transport,
+      parentChannelId: this.channelId,
+      logger: this.logger,
+      onThread: (childId, threadId) => {
+        const entry = this.subagents.get(childId)
+        if (!entry) return
+        entry.threadId = threadId
+        // The parent block now has a link to show.
+        this.schedule()
+      },
+    })
+    return this.subagentCards
   }
 
   /** Children in the order they were first seen. */
@@ -352,6 +379,7 @@ export class StreamReporter {
     await this.flushing.catch(() => undefined)
     await this.toolFlushing.catch(() => undefined)
     const finalText = text || this.text
+    await this.subagentCards?.closeAll()
     if (!this.messageId) return
     const elapsed = Date.now() - this.startedAt
     // A single card holds the answer; textChunks inside cardPayload already
@@ -392,6 +420,7 @@ export class StreamReporter {
 
   async dispose() {
     this.closed = true
+    await this.subagentCards?.closeAll()
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
     await this.flushing.catch(() => undefined)

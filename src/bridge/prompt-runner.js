@@ -66,6 +66,7 @@ export async function runPrompt(
       intervalMs: config.streamEditIntervalMs,
       logger,
       showReasoning: true,
+      subagentThreads: config.subagentThreads,
       ...routeMeta(runtime, boundChannelId || thread.channelId),
     })
     await reporter.begin()
@@ -77,6 +78,7 @@ export async function runPrompt(
       intervalMs: config.streamEditIntervalMs,
       logger,
       showReasoning: false,
+      subagentThreads: config.subagentThreads,
       ...routeMeta(runtime, boundChannelId || channelId),
     })
     await reporter.begin()

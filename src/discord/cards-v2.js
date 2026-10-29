@@ -265,10 +265,12 @@ function subagentRow(child) {
     48,
   )
   const glyph = subagentGlyph(child)
-  if (!name) return `-# ↳ 「${label}」${glyph}`
+  // A thread link is the only path to the child's detail; show it once it exists.
+  const thread = child?.threadId ? ` 🧵 <#${child.threadId}>` : ''
+  if (!name) return `-# ↳ 「${label}」${glyph}${thread}`
   return description
-    ? `-# ↳ 「${label}」${glyph} \`${name}\` · ${description}`
-    : `-# ↳ 「${label}」${glyph} \`${name}\``
+    ? `-# ↳ 「${label}」${glyph} \`${name}\` · ${description}${thread}`
+    : `-# ↳ 「${label}」${glyph} \`${name}\`${thread}`
 }
 
 /**
