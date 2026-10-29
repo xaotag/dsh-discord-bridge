@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { UNTRUSTED_INPUT_POLICY } from './untrusted.js'
-import { SUBAGENT_QUESTION_GUIDE } from './prompt-guidance.js'
+import { SUBAGENT_PERMISSION_GUIDE, SUBAGENT_QUESTION_GUIDE } from './prompt-guidance.js'
 import { listModels, listReasoningEfforts } from './agent-catalog.js'
 import { SessionTree } from './session-tree.js'
 
@@ -271,6 +271,15 @@ export class AgentService {
           name: 'discord:subagent-question-guide',
           order: -999_999,
           text: SUBAGENT_QUESTION_GUIDE,
+          interpolate: false,
+        })
+        // Delegation-time fact: a child's approval policy is pinned to `never`,
+        // so the root has to switch the preset before delegating instead of
+        // expecting the child to ask.
+        systemPrompt.section({
+          name: 'discord:subagent-permission-guide',
+          order: -999_998,
+          text: SUBAGENT_PERMISSION_GUIDE,
           interpolate: false,
         })
       } catch (error) {

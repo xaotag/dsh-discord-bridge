@@ -6,6 +6,7 @@
  */
 import { handleSessionCommand } from './session.js'
 import { handleModelCommand } from './model.js'
+import { handlePermissionCommand } from './permission.js'
 import { handleTaskCommand } from './task.js'
 import { handleThreadCommand } from './thread.js'
 import { handleSystemCommand } from './system.js'
@@ -13,6 +14,7 @@ import { handleSystemCommand } from './system.js'
 const GROUPS = {
   session: handleSessionCommand,
   model: handleModelCommand,
+  permission: handlePermissionCommand,
   task: handleTaskCommand,
   thread: handleThreadCommand,
   system: handleSystemCommand,
