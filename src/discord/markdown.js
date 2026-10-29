@@ -38,7 +38,6 @@ export function discordMarkdownFilter(text, { keepHeadings = true } = {}) {
   if (!source) return ''
   return mapOutsideCode(source, (segment) => {
     let out = segment
-    out = convertTables(out)
     out = convertSetextHeadings(out)
     out = keepHeadings ? clampHeadings(out) : downgradeHeadings(out)
     out = convertImages(out)
@@ -48,6 +47,9 @@ export function discordMarkdownFilter(text, { keepHeadings = true } = {}) {
     out = flattenDeepNesting(out)
     // Dropping a rule line leaves the blank lines that surrounded it.
     out = out.replace(/\n{3,}/g, '\n\n')
+    // Tables go last: the box they draw lives inside a fence, and any rewrite
+    // running after it would shift the padding the borders depend on.
+    out = convertTables(out)
     return out
   })
 }
@@ -201,13 +203,29 @@ export function downgradeHeadings(text) {
 }
 
 /**
- * Convert a GFM pipe table into something Discord renders natively.
- *
- * Discord supports no table syntax. Narrow (2-column) tables become bullet
- * lists that wrap cleanly; wider ones stay in a fenced block whose columns are
- * padded by display width so CJK text lines up.
+ * Widest grid, in monospace cells, that still reads without horizontal scroll.
+ * Kept under `CODE_LINE_WIDTH` so the embed path's line wrapper cannot reflow a
+ * drawn table and break its alignment.
  */
-export function convertTables(text, { maxRows = 60 } = {}) {
+export const TABLE_MAX_WIDTH = 84
+/** Columns never shrink below this, so a wrapped cell still has visible room. */
+const TABLE_MIN_COL_WIDTH = 4
+/** A single column wider than this wraps instead of pushing the grid out. */
+const TABLE_MAX_COL_WIDTH = 28
+
+/**
+ * Convert a GFM pipe table into an ASCII box inside a fenced block.
+ *
+ * Discord has no table syntax on any surface, so the grid can only be drawn in
+ * the one place the client uses a monospace font: a code fence. Columns are
+ * padded by display width (a CJK glyph or emoji counts as two cells), which is
+ * why the raw pipe rows looked ragged.
+ *
+ * Column alignment follows the GFM rule row (`:---`, `:---:`, `---:`). A table
+ * too wide for `maxWidth` is shrunk column by column and over-long cells wrap;
+ * a table whose columns cannot fit at all falls back to pipe rows.
+ */
+export function convertTables(text, { maxRows = 60, maxWidth = TABLE_MAX_WIDTH } = {}) {
   const lines = String(text ?? '').split('\n')
   const out = []
   let i = 0
@@ -224,6 +242,7 @@ export function convertTables(text, { maxRows = 60 } = {}) {
     const next = lines[i + 1]
     if (isRow(line) && next !== undefined && isSeparator(next)) {
       const header = splitRow(line)
+      const aligns = parseAlignments(splitRow(next), header.length)
       const rows = []
       let j = i + 2
       while (j < lines.length && isRow(lines[j])) {
@@ -233,7 +252,7 @@ export function convertTables(text, { maxRows = 60 } = {}) {
         rows.push(splitRow(lines[j]))
         j += 1
       }
-      out.push(renderCodeTable(header, rows, { maxRows }))
+      out.push(renderAsciiTable(header, aligns, rows, { maxRows, maxWidth }))
       i = j
       continue
     }
@@ -243,13 +262,42 @@ export function convertTables(text, { maxRows = 60 } = {}) {
   return out.join('\n')
 }
 
+/** Split a pipe row, honouring `\|` escapes so a cell can contain a pipe. */
 function splitRow(line) {
   const trimmed = String(line).trim()
   if (!trimmed.includes('|')) return []
   let body = trimmed
   if (body.startsWith('|')) body = body.slice(1)
-  if (body.endsWith('|')) body = body.slice(0, -1)
-  return body.split('|').map((cell) => cell.trim())
+  if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1)
+
+  const cells = []
+  let cell = ''
+  for (let k = 0; k < body.length; k += 1) {
+    const ch = body[k]
+    if (ch === '\\' && body[k + 1] === '|') {
+      cell += '|'
+      k += 1
+      continue
+    }
+    if (ch === '|') {
+      cells.push(cell.trim())
+      cell = ''
+      continue
+    }
+    cell += ch
+  }
+  cells.push(cell.trim())
+  return cells
+}
+
+/** Map the GFM rule row onto alignments; anything unmarked is left-aligned. */
+function parseAlignments(separatorCells, columns) {
+  return Array.from({ length: columns }, (_, i) => {
+    const cell = String(separatorCells[i] ?? '').trim()
+    if (cell.startsWith(':') && cell.endsWith(':')) return 'center'
+    if (cell.endsWith(':')) return 'right'
+    return 'left'
+  })
 }
 
 /**
@@ -321,34 +369,149 @@ function clipToWidth(text, width) {
 }
 
 /**
- * Discord has no table syntax at all, on any surface, so a pipe table is always
- * rewritten. Every table becomes a fenced record block.
+ * Strip inline Markdown from a cell before it is measured.
+ *
+ * The grid is printed inside a code fence, where `**bold**` and `` `code` ``
+ * would appear literally and also inflate the measured width, so the markers
+ * have to go first.
  */
-function renderCodeTable(header, rows, { maxRows }) {
-  return renderRecordTable(header, rows, maxRows)
+function plainCellText(text) {
+  let out = String(text ?? '').trim()
+  out = out.replace(/`{2,}/g, ' ')
+  out = out.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+  out = out.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  out = out.replace(/`([^`]*)`/g, '$1')
+  out = out.replace(/\*\*([^*]+)\*\*/g, '$1')
+  out = out.replace(/__([^_]+)__/g, '$1')
+  out = out.replace(/~~([^~]+)~~/g, '$1')
+  out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1$2')
+  out = out.replace(/(^|[^_\w])_([^_\n]+)_/g, '$1$2')
+  out = out.replace(/<[^>]+>/g, '')
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+/** Pad a cell to a display width. Padding by `String.length` drifts on CJK. */
+function padDisplay(text, width, align = 'left') {
+  const source = String(text ?? '')
+  const current = displayWidth(source)
+  if (current >= width) return source
+  const pad = width - current
+  if (align === 'right') return ' '.repeat(pad) + source
+  if (align === 'center') {
+    const left = Math.floor(pad / 2)
+    return ' '.repeat(left) + source + ' '.repeat(pad - left)
+  }
+  return source + ' '.repeat(pad)
 }
 
 /**
- * Render a pipe table as plain `|`-separated lines.
+ * Wrap one cell to a column width, preferring a break at the last space so
+ * Latin words stay whole; CJK has no spaces and breaks anywhere.
+ */
+function wrapToWidth(text, width) {
+  const source = String(text ?? '')
+  if (displayWidth(source) <= width) return [source]
+  const lines = []
+  let line = ''
+  let used = 0
+  for (const ch of source) {
+    const w = charWidth(ch.codePointAt(0))
+    if (used + w > width && line) {
+      const space = line.lastIndexOf(' ')
+      if (space > 0) {
+        lines.push(line.slice(0, space))
+        line = line.slice(space + 1)
+      } else {
+        lines.push(line)
+        line = ''
+      }
+      used = displayWidth(line)
+    }
+    line += ch
+    used += w
+  }
+  if (line) lines.push(line)
+  return lines.length ? lines : ['']
+}
+
+/**
+ * Content widths for the grid, capped so the frame stays inside `maxWidth`.
+ * Returns null when even the minimum widths cannot fit — the caller falls back
+ * to pipe rows rather than drawing a grid that overflows the viewport.
+ */
+function columnWidths(rows, columns, maxWidth) {
+  const widths = Array.from({ length: columns }, (_, i) => {
+    let width = TABLE_MIN_COL_WIDTH
+    for (const row of rows) width = Math.max(width, displayWidth(row[i] ?? ''))
+    return Math.min(width, TABLE_MAX_COL_WIDTH)
+  })
+  const frame = columns + 1 + columns * 2
+  let content = widths.reduce((sum, width) => sum + width, 0)
+  while (content + frame > maxWidth) {
+    let widest = 0
+    for (let i = 1; i < widths.length; i += 1) {
+      if (widths[i] > widths[widest]) widest = i
+    }
+    if (widths[widest] <= TABLE_MIN_COL_WIDTH) return null
+    widths[widest] -= 1
+    content -= 1
+  }
+  return widths
+}
+
+/**
+ * Draw the table as a box inside a ```text fence.
  *
- * Discord has no table syntax on any surface, so the grid itself cannot be
- * reproduced. Attempts to fake it — padding columns, fencing them in monospace —
- * all fail on mixed CJK/Latin content, because a CJK glyph is not exactly two
- * monospace cells. Keeping the original `|` separators is what survives every
- * client: each row reads as one line of `a | b | c` without pretending to align.
- *
- * The header row is bolded so it still reads as a header, and the `---` rule row
- * is dropped because Discord would print it literally.
+ * A monospace cell is not a pixel unit, so wide glyphs can still drift by a
+ * fraction of a cell; the borders only line up as long as every line is padded
+ * by measured display width, which is exactly what this does.
+ */
+function renderAsciiTable(header, aligns, rows, { maxRows, maxWidth }) {
+  const headerCells = header.map((cell) => plainCellText(cell))
+  const columns = headerCells.length
+  const shown = rows
+    .slice(0, maxRows)
+    .map((row) => headerCells.map((_, i) => plainCellText(row[i] ?? '')))
+  const widths = columnWidths([headerCells, ...shown], columns, maxWidth)
+  if (!widths) return renderRecordTable(headerCells, rows, maxRows)
+
+  const border = (left, mid, right) =>
+    left + widths.map((width) => '─'.repeat(width + 2)).join(mid) + right
+  const lines = [border('┌', '┬', '┐')]
+
+  const pushRow = (cells) => {
+    const wrapped = cells.map((cell, i) => wrapToWidth(cell, widths[i]))
+    const height = Math.max(...wrapped.map((cell) => cell.length), 1)
+    for (let line = 0; line < height; line += 1) {
+      const parts = wrapped.map(
+        (cellLines, i) => ` ${padDisplay(cellLines[line] ?? '', widths[i], aligns[i])} `,
+      )
+      lines.push(`│${parts.join('│')}│`)
+    }
+  }
+
+  pushRow(headerCells)
+  lines.push(border('├', '┼', '┤'))
+  for (const row of shown) pushRow(row)
+  lines.push(border('└', '┴', '┘'))
+
+  const block = ['```text', ...lines, '```'].join('\n')
+  const clipped = rows.length > maxRows ? `\n… 另有 ${rows.length - maxRows} 行` : ''
+  return `${block}${clipped}`
+}
+
+/**
+ * Fallback for a table that cannot be drawn inside `maxWidth`: raw `|` rows
+ * with a bolded header, which survive every client even without alignment.
  */
 function renderRecordTable(header, rows, maxRows) {
   const lines = []
-  const headerCells = header.map((cell) => String(cell ?? '').trim())
-  if (headerCells.some(Boolean)) {
-    lines.push(headerCells.map((cell) => (cell ? `**${cell}**` : '')).join(' | '))
+  if (header.some(Boolean)) {
+    lines.push(header.map((cell) => (cell ? `**${cell}**` : '')).join(' | '))
   }
+  const escape = (cell) => plainCellText(cell).replace(/\|/g, '\\|')
   for (const row of rows.slice(0, maxRows)) {
-    const cells = row.map((cell) => String(cell ?? '').trim())
-    lines.push(cells.join(' | '))
+    lines.push(header.map((_, i) => escape(row[i] ?? '')).join(' | '))
   }
   if (rows.length > maxRows) lines.push(`… 另有 ${rows.length - maxRows} 行`)
   return lines.join('\n')

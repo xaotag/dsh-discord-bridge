@@ -175,7 +175,7 @@ exactly as written; only syntax Discord lacks at all is converted:
 |---|---|---|
 | `# Heading` | **kept verbatim** | Text Display renders ATX headings |
 | Lists / nesting | **kept verbatim** | Text Display supports nested indentation |
-| Tables | `a \| b` lines, header bolded | **No** Discord surface has table syntax; padding columns drifts with CJK |
+| Tables | ASCII box (`┌┬┐`, `│`) inside a text code fence | **No** Discord surface has table syntax; a fence is the only monospace surface, and columns are padded by display width (CJK counts as two cells) |
 | Code block content | untouched | Never rewritten |
 
 ### Component limits (from the Component Reference)
@@ -198,10 +198,14 @@ local instead of becoming a `400 BAD REQUEST` from Discord. A V2 payload also st
 `content`, `embeds`, `stickers`, `poll` and `shared_client_theme`, which the message
 resource rejects once the `IS_COMPONENTS_V2` flag is set.
 
-Tables are never padded to align columns: every row keeps its original `|`
-separators, the header is bolded and the `---` rule row is dropped. Padding by
-display width was tried and abandoned — CJK glyphs do not occupy exactly two
-monospace cells on every client.
+Tables are redrawn as an ASCII box inside a text code fence: column widths come from
+display width (CJK and emoji count as two cells), short columns are padded, long
+cells wrap, and the whole grid is capped at 84 cells — under the 88-cell wrap
+threshold of the embed path, so the line wrapper cannot reflow a drawn table.
+Inline Markdown is stripped before a cell is measured, `\|` escapes do not split
+a row, and GFM alignment markers (`:---`, `:---:`, `---:`) become left, centre and
+right padding. A table with too many columns to draw at the minimum width falls
+back to plain `a \| b` rows instead of overflowing the viewport.
 
 ## Thread isolation
 

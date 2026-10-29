@@ -413,14 +413,14 @@ test('markdown adapter leaves inline hashes and code fences alone', () => {
   assert.ok(out.includes('const a = 1'))
 })
 
-test('markdown adapter turns a table into pipe-separated lines', () => {
-  // Discord has no table syntax on any surface; keeping the original `|`
-  // separators is the only form that survives every client.
+test('markdown adapter draws a table as an aligned ASCII box', () => {
+  // Discord has no table syntax on any surface; a code fence is the only place
+  // with a monospace font, so the grid is drawn there.
   const out = adaptMarkdownForEmbed('| a | b |\n|---|---|\n| 1 | 2 |')
-  assert.ok(!out.includes('```'), 'no code fence')
+  assert.ok(out.includes('```text'), 'the grid lives in a fence')
   assert.ok(!out.includes('|---'), 'the rule row is gone')
-  assert.match(out, /\*\*a\*\* \| \*\*b\*\*/, 'header is bolded and pipe-separated')
-  assert.match(out, /^1 \| 2$/m, 'data row keeps its pipes')
+  assert.match(out, /│ a +│ b +│/, 'header cells are padded')
+  assert.match(out, /│ 1 +│ 2 +│/, 'data cells are padded')
 })
 
 test('markdown adapter keeps an unterminated fence verbatim while streaming', () => {
@@ -440,9 +440,9 @@ test('embed payloads go through the markdown adapter', () => {
   const description = payload.embeds[0].description
   assert.ok(!/^# Heading/m.test(description))
   assert.ok(description.includes('**Heading**'))
-  // Tables become pipe-separated lines inside an embed too.
-  assert.match(description, /\*\*a\*\* \| \*\*b\*\* \| \*\*c\*\*/)
-  assert.ok(!description.includes('```'))
+  // A table is drawn as a boxed grid inside an embed description too.
+  assert.ok(description.includes('```text'))
+  assert.match(description, /│ a +│ b +│ c +│/)
 })
 
 test('config expands ~ in audit and state paths', async () => {
@@ -724,23 +724,71 @@ test('displayWidth counts CJK and emoji as two cells', async () => {
   assert.equal(displayWidth('a名b'), 4)
 })
 
-test('tables keep pipe separators and never try to align columns', async () => {
-  const { convertTables } = await import('../src/discord/markdown.js')
+test('tables are boxed and aligned by display width, CJK included', async () => {
+  const { convertTables, displayWidth } = await import('../src/discord/markdown.js')
   const out = convertTables('| 名称 | 状态 | 说明 |\n|---|---|---|\n| 中文.js | ✅ | 描述 |')
-  assert.match(out, /^\*\*名称\*\* \| \*\*状态\*\* \| \*\*说明\*\*$/m)
-  assert.match(out, /^中文\.js \| ✅ \| 描述$/m)
-  // No alignment attempt: padding is what drifts once CJK is mixed in.
-  assert.ok(!out.includes('│'), 'no box-drawing separators')
-  assert.ok(!out.includes('─'), 'no drawn rule')
-  assert.ok(!out.includes('```'), 'no code fence')
-  assert.ok(!/\s{2,}\|/.test(out), 'no space padding before a separator')
+  const rules = out.split('\n').filter((line) => /^[┌├└]/.test(line))
+  const cells = out.split('\n').filter((line) => line.startsWith('│'))
+  assert.equal(rules.length, 3, 'top rule, header rule, bottom rule')
+  assert.equal(cells.length, 2, 'header row plus one data row')
+  // Every drawn line must have the same display width, or the borders jag.
+  const widths = new Set([...rules, ...cells].map((line) => displayWidth(line)))
+  assert.equal(widths.size, 1, 'all grid lines measure the same width')
+  assert.ok(!out.includes('**'), 'no markdown markers inside the fence')
+  assert.ok(out.startsWith('```text\n┌'), 'grid is fenced')
+  assert.ok(out.trimEnd().endsWith('```'), 'fence closes')
 })
 
-test('a two-column table also stays pipe-separated', async () => {
+test('a two-column table is boxed too', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
   const out = convertTables('| 键 | 值 |\n|---|---|\n| a | 1 |')
-  assert.match(out, /^\*\*键\*\* \| \*\*值\*\*$/m)
-  assert.match(out, /^a \| 1$/m)
+  assert.match(out, /┌──────┬──────┐/)
+  assert.match(out, /│ 键\s+│ 值\s+│/)
+  assert.match(out, /│ a\s+│ 1\s+│/)
+})
+
+test('column alignment follows the rule row markers', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const out = convertTables('| 左 | 中 | 右 |\n|:---|:---:|---:|\n| a | b | c |')
+  const data = out.split('\n').find((line) => line.includes('│ a'))
+  assert.match(data, /│ a {4}│/, 'left column pads on the right')
+  assert.match(data, /│ {2}b {3}│/, 'center column pads both sides')
+  assert.match(data, /│ {4}c │/, 'right column pads on the left')
+})
+
+test('an escaped pipe stays inside its cell', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const out = convertTables('| 写法 | 说明 |\n|---|---|\n| a \\| b | 管道 |')
+  assert.ok(out.includes('a | b'), 'the escape is resolved, not split')
+  assert.equal(out.split('\n').filter((line) => line.startsWith('│')).length, 2)
+})
+
+test('inline markdown is stripped before a cell is measured', async () => {
+  const { convertTables, displayWidth } = await import('../src/discord/markdown.js')
+  const out = convertTables('| 名称 | 说明 |\n|---|---|\n| **粗** | `代码`[链接](https://x.y) |')
+  assert.ok(!out.includes('**'), 'bold markers would print literally in a fence')
+  assert.ok(!out.includes('`代码`'), 'code markers would print literally too')
+  assert.ok(out.includes('代码链接'))
+  const drawn = out.split('\n').filter((line) => /^[┌├└│]/.test(line))
+  assert.equal(new Set(drawn.map((line) => displayWidth(line))).size, 1)
+})
+
+test('an over-wide table shrinks and wraps cells instead of overflowing', async () => {
+  const { convertTables, displayWidth, TABLE_MAX_WIDTH } = await import('../src/discord/markdown.js')
+  const cell = '很长的单元格内容'.repeat(4)
+  const out = convertTables(`| 一 | 二 | 三 |\n|---|---|---|\n| ${cell} | ${cell} | ${cell} |`)
+  const cells = out.split('\n').filter((line) => line.startsWith('│'))
+  assert.ok(cells.length > 2, 'cells wrap onto extra lines')
+  for (const line of cells) assert.ok(displayWidth(line) <= TABLE_MAX_WIDTH)
+})
+
+test('a table with too many columns falls back to pipe rows', async () => {
+  const { convertTables } = await import('../src/discord/markdown.js')
+  const header = Array.from({ length: 20 }, (_, i) => `c${i}`).join(' | ')
+  const row = Array.from({ length: 20 }, (_, i) => `v${i}`).join(' | ')
+  const out = convertTables(`| ${header} |\n|${'---|'.repeat(20)}\n| ${row} |`)
+  assert.ok(!out.includes('┌'), 'a grid that cannot fit is not drawn')
+  assert.ok(out.includes('**c0** | **c1**'), 'header stays readable')
 })
 
 test('components v2 payload sets the flag and drops content/embeds', async () => {
@@ -1561,12 +1609,13 @@ test('two adjacent tables stay separate instead of merging rows', async () => {
   const { convertTables } = await import('../src/discord/markdown.js')
   const out = convertTables('| a | b |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |')
   // The rule row of the second table must act as a boundary, not become a data
-  // row of the first.
+  // row of the first, so each table gets its own fence.
   assert.ok(!out.includes('---'), 'no rule row leaked into the output')
-  assert.match(out, /^\*\*a\*\* \| \*\*b\*\*$/m)
-  assert.match(out, /^1 \| 2$/m)
-  assert.match(out, /^\*\*c\*\* \| \*\*d\*\*$/m)
-  assert.match(out, /^3 \| 4$/m)
+  assert.equal((out.match(/```text/g) || []).length, 2, 'one fence per table')
+  assert.match(out, /│ a\s+│ b\s+│/)
+  assert.match(out, /│ 1\s+│ 2\s+│/)
+  assert.match(out, /│ c\s+│ d\s+│/)
+  assert.match(out, /│ 3\s+│ 4\s+│/)
 })
 
 test('the Discord filter keeps only what the client renders', async () => {
