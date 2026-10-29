@@ -1309,7 +1309,8 @@ test('a pending card shows a real countdown that ticks', async () => {
   )
   const { questionCard } = await import('../src/discord/cards-v2.js')
 
-  assert.ok(COUNTDOWN_INTERVAL_MS >= 5000, 'stays inside the 5-edits/5s rate limit')
+  assert.ok(COUNTDOWN_INTERVAL_MS <= 1500, 'ticks about once a second')
+  assert.ok(COUNTDOWN_INTERVAL_MS >= 1000, 'slow enough to respect the edit budget')
 
   const edits = []
   const runtime = {
@@ -1397,4 +1398,43 @@ test('countdown is a no-op without a message id', async () => {
   await new Promise((r) => setTimeout(r, 50))
   stop()
   assert.equal(calls, 0)
+})
+
+test('countdown edits respect the per-channel rate budget', async () => {
+  const { startCountdown, resetCountdownClock, MIN_EDIT_GAP_MS } = await import(
+    '../src/bridge/interactions/countdown.js'
+  )
+  const { questionCard } = await import('../src/discord/cards-v2.js')
+  resetCountdownClock()
+
+  const times = []
+  const runtime = {
+    transport: { edit: async () => { times.push(Date.now()) } },
+    logger: { warn() {} },
+  }
+  const expiresAt = Date.now() + 4000
+  const build = () =>
+    questionCard({ requestId: 'r', index: 0, total: 3, question: { question: '?' }, expiresAt })
+
+  // Three cards in one channel share the 5-edits/5s budget.
+  const stops = [1, 2, 3].map((i) =>
+    startCountdown(runtime, { channelId: 'c', messageId: `m${i}`, expiresAt, build }),
+  )
+  await new Promise((r) => setTimeout(r, 3000))
+  stops.forEach((stop) => stop())
+  resetCountdownClock()
+
+  assert.ok(times.length >= 2, 'cards still refresh')
+  const gaps = times.slice(1).map((t, i) => t - times[i])
+  if (gaps.length) {
+    assert.ok(
+      Math.min(...gaps) >= MIN_EDIT_GAP_MS - 50,
+      `edits are spaced by the gate: ${gaps.join(', ')}`,
+    )
+  }
+  // No five-second window may exceed Discord's five-edit ceiling.
+  for (const start of times) {
+    const inWindow = times.filter((t) => t >= start && t < start + 5000).length
+    assert.ok(inWindow <= 5, `five-second window held ${inWindow} edits`)
+  }
 })
