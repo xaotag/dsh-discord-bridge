@@ -136,7 +136,19 @@ export class DiscordTransport {
     )
   }
 
-  async edit(channelId, messageId, payload) {
+  /**
+   * Edit a message.
+   *
+   * `audit: false` is for cosmetic refreshes such as a countdown tick: they are
+   * the same operation repeated, and logging each one buries the real edits.
+   */
+  async edit(channelId, messageId, payload, { audit = true } = {}) {
+    if (!audit) {
+      const channel = await this.client.channels.fetch(channelId)
+      if (!channel?.messages) throw new Error('Discord channel 不可编辑消息')
+      await channel.messages.edit(messageId, normalizePayload(payload))
+      return
+    }
     return this.withAudit(
       'discord',
       'message.edit',

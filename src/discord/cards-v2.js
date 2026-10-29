@@ -97,6 +97,20 @@ export function cardPayload({
   return v2Payload([container(children, { accentColor })])
 }
 
+/**
+ * Countdown text for a card footer.
+ *
+ * Two pieces on purpose: `<t:UNIX:R>` is rendered by Discord and keeps ticking on
+ * the client with no message edit, while the remaining seconds are exact at the
+ * moment the card is built. A countdown loop re-renders the card so the seconds
+ * stay real; if a refresh is missed, the timestamp is still correct.
+ */
+function formatCountdown(expiresAt, remainingMs) {
+  const seconds = Math.max(0, Math.ceil(remainingMs / 1000))
+  const unix = Math.floor(expiresAt / 1000)
+  return `⏳ 剩余 ${seconds}s（<t:${unix}:R> 失效）`
+}
+
 function clampHeading(level) {
   const n = Number(level)
   if (!Number.isFinite(n)) return 2
@@ -388,7 +402,7 @@ export function questionCard({
   const bits = []
   if (expiresAt) {
     const left = Math.max(0, expiresAt - Date.now())
-    if (left > 0) bits.push(`${Math.ceil(left / 1000)}s 后失效`)
+    if (left > 0) bits.push(formatCountdown(expiresAt, left))
   }
   if (bits.length) {
     children.push(separator({ spacing: 1 }))
@@ -463,7 +477,7 @@ export function approvalCard({
   if (footer) bits.push(footer)
   if (expiresAt) {
     const left = Math.max(0, expiresAt - Date.now())
-    if (left > 0) bits.push(`${Math.ceil(left / 1000)}s 后失效`)
+    if (left > 0) bits.push(formatCountdown(expiresAt, left))
   }
   const row = actionRow([
     button({ customId: `${approvePrefix}${requestId}`, label: '批准', style: 3, emoji: { name: '✅' } }),

@@ -15,6 +15,7 @@ import {
   questionCustomModal,
 } from '../../discord/cards-v2.js'
 import { DELEGATE } from '../runtime.js'
+import { startCountdown } from './countdown.js'
 
 /** True for a custom_id owned by the question card's select or skip controls. */
 export function isQuestionCustomId(customId) {
@@ -57,27 +58,41 @@ export async function answerUserQuestions(runtime, request) {
     detail: { requestId: entry.id, count: questions.length },
   })
 
+  // Countdown stops for every card the moment the request settles, however it
+  // settles (answered, skipped, timed out, or shutdown).
+  const stopCountdowns = []
   try {
     for (let index = 0; index < questions.length; index += 1) {
       // A later question may already be settled if the request timed out.
       if (!registry.get(entry.id)) break
-      const payload = questionCard({
-        requestId: entry.id,
-        question: questions[index],
-        index,
-        total: questions.length,
-        expiresAt: entry.expiresAt,
-      })
-      const sent = await transport.send(channelId, payload)
+      const build = () =>
+        questionCard({
+          requestId: entry.id,
+          question: questions[index],
+          index,
+          total: questions.length,
+          expiresAt: entry.expiresAt,
+        })
+      const sent = await transport.send(channelId, build())
       registry.get(entry.id)?.messageIds.push({ index, messageId: sent.messageId })
+      stopCountdowns.push(
+        startCountdown(runtime, {
+          channelId,
+          messageId: sent.messageId,
+          expiresAt: entry.expiresAt,
+          build,
+        }),
+      )
     }
   } catch (error) {
     logger.warn('发送问题卡片失败，按跳过处理:', error?.message || String(error))
     registry.finish(entry.id, 'error')
+    for (const stop of stopCountdowns) stop()
     return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
   }
 
   const settled = await entry.answered
+  for (const stop of stopCountdowns) stop()
   audit.record({
     category: 'discord',
     action: 'question.answered',

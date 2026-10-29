@@ -6,6 +6,7 @@
  */
 import { APPROVE_BUTTON_PREFIX, REJECT_BUTTON_PREFIX } from '../../discord/renderer.js'
 import { approvalCard, decidedApprovalCard } from '../../discord/cards-v2.js'
+import { startCountdown } from './countdown.js'
 
 /**
  * Post a confirmation card and await the decision.
@@ -20,17 +21,20 @@ export async function requestApproval(
   if (!channelId) return 'timeout'
   const { approvals, transport, audit, logger } = runtime
   const request = approvals.create({ channelId, userId, description })
+  let stopCountdown = () => {}
   try {
-    const payload = approvalCard({
-      requestId: request.id,
-      title,
-      description,
-      footer,
-      expiresAt: request.expiresAt,
-      approvePrefix: APPROVE_BUTTON_PREFIX,
-      rejectPrefix: REJECT_BUTTON_PREFIX,
-    })
-    const sent = await transport.send(channelId, payload)
+    /** Rebuilt on each tick so the footer's remaining time stays real. */
+    const build = () =>
+      approvalCard({
+        requestId: request.id,
+        title,
+        description,
+        footer,
+        expiresAt: request.expiresAt,
+        approvePrefix: APPROVE_BUTTON_PREFIX,
+        rejectPrefix: REJECT_BUTTON_PREFIX,
+      })
+    const sent = await transport.send(channelId, build())
     audit.record({
       category: 'discord',
       action: 'approval.request',
@@ -40,11 +44,19 @@ export async function requestApproval(
       userId,
       detail: { requestId: request.id, messageId: sent?.messageId },
     })
+    stopCountdown = startCountdown(runtime, {
+      channelId,
+      messageId: sent?.messageId,
+      expiresAt: request.expiresAt,
+      build,
+    })
     return await request.decided
   } catch (error) {
     approvals.finish(request.id, 'timeout')
     logger.warn('发送确认卡片失败:', error?.message || String(error))
     return 'timeout'
+  } finally {
+    stopCountdown()
   }
 }
 

@@ -1302,3 +1302,99 @@ test('every question button routes to its own handler', async () => {
   assert.equal(classifyButton(`${APPROVE_BUTTON_PREFIX}r1`), 'approval')
   assert.equal(classifyButton(`${REJECT_BUTTON_PREFIX}r1`), 'approval')
 })
+
+test('a pending card shows a real countdown that ticks', async () => {
+  const { startCountdown, COUNTDOWN_INTERVAL_MS } = await import(
+    '../src/bridge/interactions/countdown.js'
+  )
+  const { questionCard } = await import('../src/discord/cards-v2.js')
+
+  assert.ok(COUNTDOWN_INTERVAL_MS >= 5000, 'stays inside the 5-edits/5s rate limit')
+
+  const edits = []
+  const runtime = {
+    transport: {
+      edit: async (channelId, messageId, payload, opts) => {
+        const texts = flattenTexts(payload.components)
+        edits.push({ audit: opts?.audit, line: texts.find((t) => t.includes('剩余')) })
+      },
+    },
+    logger: { warn() {} },
+  }
+  // A 3s window so the whole-second value actually crosses a boundary while the
+  // test runs.
+  const expiresAt = Date.now() + 3000
+  const build = () =>
+    questionCard({ requestId: 'r', index: 0, total: 1, question: { question: '?' }, expiresAt })
+
+  const stop = startCountdown(runtime, {
+    channelId: 'c',
+    messageId: 'm',
+    expiresAt,
+    build,
+    intervalMs: 300,
+  })
+  await new Promise((r) => setTimeout(r, 1600))
+  stop()
+
+  assert.ok(edits.length >= 2, 'the card is re-rendered at least twice')
+  // A refresh is cosmetic: it must not write audit rows.
+  assert.ok(
+    edits.every((e) => e.audit === false),
+    'countdown ticks skip the audit log',
+  )
+  const seconds = edits
+    .map((e) => Number(/剩余 (\d+)s/.exec(e.line || '')?.[1]))
+    .filter(Number.isFinite)
+  assert.ok(seconds.length >= 2)
+  assert.ok(seconds[0] > seconds.at(-1), `countdown decreases: ${seconds.join(' → ')}`)
+})
+
+test('the countdown text carries a client-side relative timestamp', async () => {
+  const { questionCard } = await import('../src/discord/cards-v2.js')
+  const expiresAt = Date.now() + 120_000
+  const card = questionCard({
+    requestId: 'r',
+    index: 0,
+    total: 1,
+    question: { question: '?' },
+    expiresAt,
+  })
+  const line = flattenTexts(card.components).find((t) => t.includes('剩余'))
+  // `<t:UNIX:R>` keeps ticking on the client even if a refresh is missed.
+  assert.match(line, new RegExp(`<t:${Math.floor(expiresAt / 1000)}:R>`))
+  assert.match(line, /剩余 120s/)
+})
+
+test('the countdown stops itself once the deadline passes', async () => {
+  const { startCountdown } = await import('../src/bridge/interactions/countdown.js')
+  let calls = 0
+  const runtime = {
+    transport: { edit: async () => { calls += 1 } },
+    logger: { warn() {} },
+  }
+  const stop = startCountdown(runtime, {
+    channelId: 'c',
+    messageId: 'm',
+    expiresAt: Date.now() + 60, // already expiring
+    build: () => ({}),
+    intervalMs: 20,
+  })
+  await new Promise((r) => setTimeout(r, 120))
+  const after = calls
+  await new Promise((r) => setTimeout(r, 80))
+  stop()
+  assert.equal(calls, after, 'no ticks after the deadline')
+})
+
+test('countdown is a no-op without a message id', async () => {
+  const { startCountdown } = await import('../src/bridge/interactions/countdown.js')
+  let calls = 0
+  const stop = startCountdown(
+    { transport: { edit: async () => { calls += 1 } }, logger: { warn() {} } },
+    { channelId: 'c', messageId: undefined, expiresAt: Date.now() + 1000, build: () => ({}), intervalMs: 10 },
+  )
+  await new Promise((r) => setTimeout(r, 50))
+  stop()
+  assert.equal(calls, 0)
+})
