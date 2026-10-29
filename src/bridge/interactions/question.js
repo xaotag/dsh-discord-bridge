@@ -14,7 +14,7 @@ import {
   questionCard,
   questionCustomModal,
 } from '../../discord/cards-v2.js'
-import { DELEGATE } from '../runtime.js'
+import { DELEGATE, subagentThreadKey } from '../runtime.js'
 import { resolveRequestAgent } from './approval.js'
 import { startCountdown } from './countdown.js'
 
@@ -30,6 +30,58 @@ export function parseQuestionKey(customId, prefix) {
   const sep = rest.lastIndexOf(':')
   if (sep <= 0) return undefined
   return { requestId: rest.slice(0, sep), index: Number(rest.slice(sep + 1)) }
+}
+
+/**
+ * Case- and whitespace-insensitive text used only for label matching.
+ *
+ * A clipped catalog label ends in "…"; the caller names the whole description,
+ * so the ellipsis must not stop the label from being found inside it.
+ */
+function normalizeForMatch(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/…+$/, '')
+    .toLowerCase()
+}
+
+/**
+ * Channel one question card belongs in.
+ *
+ * DSH lets only a root Agent ask, so most requests carry no child identity: the
+ * caller has to name the child in the question `header` for the bridge to know
+ * which subagent the question is about. A card for a child lands in that child's
+ * thread (next to its activity card); anything the bridge cannot attribute — or
+ * a child whose thread was never opened — stays in the parent channel, which is
+ * always answerable.
+ */
+export function questionChannel(runtime, { channelId, child, question } = {}) {
+  const threadOf = (sessionId) =>
+    sessionId ? runtime.subagentThreads?.get(subagentThreadKey(channelId, sessionId)) : undefined
+
+  if (child?.sessionId) {
+    const own = threadOf(child.sessionId)
+    if (own) return own
+  }
+
+  const nodes = runtime.agents?.tree?.childrenOf?.(channelId) ?? []
+  const haystack = normalizeForMatch(
+    [question?.header, question?.question, question?.detail].filter(Boolean).join('\n'),
+  )
+  if (!nodes.length || !haystack) return channelId
+
+  // Longest label first: "子代理 A-2" must not be shadowed by "A".
+  const byLabel = nodes
+    .map((node) => ({ node, label: normalizeForMatch(node?.label) }))
+    .filter((entry) => entry.label.length >= 2)
+    .sort((a, b) => b.label.length - a.label.length)
+  for (const { node, label } of byLabel) {
+    if (!haystack.includes(label)) continue
+    const threadId = threadOf(node.sessionId)
+    if (threadId) return threadId
+  }
+  return channelId
 }
 
 /**
@@ -68,6 +120,13 @@ export async function answerUserQuestions(runtime, request) {
     for (let index = 0; index < questions.length; index += 1) {
       // A later question may already be settled if the request timed out.
       if (!registry.get(entry.id)) break
+      // A question about one child belongs in that child's thread, next to the
+      // activity card it concerns; the parent channel keeps the turn's answer.
+      const targetChannelId = questionChannel(runtime, {
+        channelId,
+        child,
+        question: questions[index],
+      })
       const build = () =>
         questionCard({
           requestId: entry.id,
@@ -77,11 +136,11 @@ export async function answerUserQuestions(runtime, request) {
           expiresAt: entry.expiresAt,
           child,
         })
-      const sent = await transport.send(channelId, build())
+      const sent = await transport.send(targetChannelId, build())
       registry.get(entry.id)?.messageIds.push({ index, messageId: sent.messageId })
       stopCountdowns.push(
         startCountdown(runtime, {
-          channelId,
+          channelId: targetChannelId,
           messageId: sent.messageId,
           expiresAt: entry.expiresAt,
           build,
@@ -164,7 +223,9 @@ export async function handleQuestionSelect(runtime, interaction, { authorized })
   }
 
   // Replace this question's controls with its outcome, through the interaction
-  // so the edit targets the message that was actually answered.
+  // so the edit targets the message that was actually answered. No private
+  // receipt follows: the card itself now states the outcome, and a second
+  // "已跳过。" under it reads as the same event twice.
   try {
     await transport.editComponentReply(
       interaction,
@@ -173,10 +234,6 @@ export async function handleQuestionSelect(runtime, interaction, { authorized })
   } catch (error) {
     logger.warn('更新问题卡片失败:', error?.message || String(error))
   }
-
-  await transport
-    .replyEphemeral(interaction, skip ? '已跳过。' : `已记录：${selected.join('、')}`)
-    .catch(() => undefined)
 }
 
 /**
@@ -251,9 +308,7 @@ export async function handleQuestionModalSubmit(runtime, interaction) {
     logger.warn('更新问题卡片失败:', error?.message || String(error))
   }
 
-  await transport
-    .replyModalMessage(interaction, custom ? `已记录：${custom.slice(0, 200)}` : '已跳过。')
-    .catch(() => undefined)
+  // The edited card is the receipt; replying again would just repeat it.
   if (!result.ok) {
     logger.warn('记录自定义答案失败:', result.reason || 'unknown')
   }

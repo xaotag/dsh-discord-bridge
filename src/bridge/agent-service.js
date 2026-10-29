@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { UNTRUSTED_INPUT_POLICY } from './untrusted.js'
+import { SUBAGENT_QUESTION_GUIDE } from './prompt-guidance.js'
 import { listModels, listReasoningEfforts } from './agent-catalog.js'
 import { SessionTree } from './session-tree.js'
 
@@ -229,6 +230,14 @@ export class AgentService {
           name: 'discord:untrusted-input-policy',
           order: -1_000_000,
           text: UNTRUSTED_INPUT_POLICY,
+          interpolate: false,
+        })
+        // Presentation-only: tells the root Agent to name the child in a
+        // question header so the card can be filed under the child's thread.
+        systemPrompt.section({
+          name: 'discord:subagent-question-guide',
+          order: -999_999,
+          text: SUBAGENT_QUESTION_GUIDE,
           interpolate: false,
         })
       } catch (error) {

@@ -41,6 +41,7 @@ export class StreamReporter {
     logger = console,
     showReasoning = false,
     subagentThreads = true,
+    onSubagentThread,
     existingMessageId,
     model,
     reasoningEffort,
@@ -64,6 +65,8 @@ export class StreamReporter {
     /** One thread per subagent; created on the first child event. */
     this.subagentThreadsEnabled = subagentThreads
     this.subagentCards = undefined
+    /** Told once per child when its thread exists, so a question can find it. */
+    this.onSubagentThread = onSubagentThread
     /** Index in tools of the call currently running, or undefined. */
     this.activeTool = undefined
     this.toolCount = 0
@@ -186,6 +189,7 @@ export class StreamReporter {
       parentChannelId: this.channelId,
       logger: this.logger,
       onThread: (childId, threadId) => {
+        this.onSubagentThread?.(childId, threadId)
         const entry = this.subagents.get(childId)
         if (!entry) return
         entry.threadId = threadId

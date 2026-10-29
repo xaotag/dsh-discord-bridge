@@ -8,7 +8,7 @@
  */
 import { StreamReporter } from './stream-reporter.js'
 import { shouldCreateThread } from './thread-manager.js'
-import { routeMeta } from './runtime.js'
+import { routeMeta, subagentThreadKey } from './runtime.js'
 import { noticeCard } from '../discord/cards-v2.js'
 
 /**
@@ -44,6 +44,22 @@ export async function runPrompt(
     })
   const thread = shouldThread ? await threads.create(channelId, prompt) : undefined
   const targetChannelId = thread?.channelId || channelId
+  // A manually bound conversation keeps its Session even when a thread is
+  // created for presentation: route the turn to the binding key.
+  const key = boundChannelId || targetChannelId
+
+  // Child threads belong to the turn that opened them. Clearing the index first
+  // keeps a question this turn from being routed to a thread from an earlier
+  // one that happened to use the same child label.
+  const threadIndex = runtime.subagentThreads
+  if (threadIndex) {
+    const prefix = `${key}\u0000`
+    for (const indexed of [...threadIndex.keys()]) {
+      if (indexed.startsWith(prefix)) threadIndex.delete(indexed)
+    }
+  }
+  const onSubagentThread = (childId, threadId) =>
+    threadIndex?.set(subagentThreadKey(key, childId), threadId)
 
   // Tell the main channel where the work went, reusing the placeholder if one
   // was already posted rather than leaving two messages behind.
@@ -67,6 +83,7 @@ export async function runPrompt(
       logger,
       showReasoning: true,
       subagentThreads: config.subagentThreads,
+      onSubagentThread,
       ...routeMeta(runtime, boundChannelId || thread.channelId),
     })
     await reporter.begin()
@@ -79,14 +96,12 @@ export async function runPrompt(
       logger,
       showReasoning: false,
       subagentThreads: config.subagentThreads,
+      onSubagentThread,
       ...routeMeta(runtime, boundChannelId || channelId),
     })
     await reporter.begin()
   }
 
-  // A manually bound conversation keeps its Session even when a thread is
-  // created for presentation: route the turn to the binding key.
-  const key = boundChannelId || targetChannelId
   const meta = { channelId: key, guildId, kind }
   try {
     const result = await agents.run(key, meta, prompt, reporter, { greeting: isGreeting, images })
