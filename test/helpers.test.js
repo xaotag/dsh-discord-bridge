@@ -854,6 +854,13 @@ test('usage footer reports the session cache hit rate and context occupancy', as
   assert.equal(formatUsage({ projectedTokens: 900 }), '上下文 900')
   // Pressure is the fallback when the projected figure is unavailable.
   assert.equal(formatUsage({ pressureTokens: 1_100_000, contextWindow: 2_000_000 }), '上下文 1.1M/2.0M (55%)')
+  // A near-total hit rate keeps one decimal instead of rounding to a fake 100%.
+  assert.equal(
+    formatUsage({ cacheReadTokens: 20_542_976, uncachedInputTokens: 93_681 }),
+    '缓存 99.5%',
+  )
+  // An exact full hit is still reported as 100%.
+  assert.equal(formatUsage({ cacheReadTokens: 1000, uncachedInputTokens: 0 }), '缓存 100%')
 })
 
 test('usage snapshot merges the session projections and tolerates absence', async () => {
