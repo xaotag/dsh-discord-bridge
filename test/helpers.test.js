@@ -838,6 +838,49 @@ test('separators divide body from footer', async () => {
   assert.ok(kinds.includes(14), 'a separator is emitted before the footer')
 })
 
+test('DSH approval requests are answered from a Discord card', async () => {
+  const { answerApprovalRequest, describeApproval, approvalOutcome } = await import(
+    '../src/bridge/interactions/approval.js'
+  )
+  const { ApprovalRegistry } = await import('../src/bridge/approval.js')
+
+  assert.equal(approvalOutcome('approved'), 'allowed-once')
+  assert.equal(approvalOutcome('rejected'), 'rejected')
+  assert.equal(approvalOutcome('timeout'), 'rejected', 'a timeout grants nothing')
+  assert.equal(approvalOutcome('cancelled'), 'cancelled')
+  assert.match(describeApproval({ toolName: 'bash', displayReason: { zh: '要写工作区外的文件' } }), /bash/)
+  assert.match(describeApproval({ toolName: 'bash', displayReason: { zh: '要写工作区外的文件' } }), /工作区外/)
+
+  const cards = []
+  const runtime = {
+    agents: { channelForAgent: () => 'c1' },
+    approvals: new ApprovalRegistry({ timeoutMs: 60_000, logger: { warn() {} } }),
+    transport: {
+      send: async (_channelId, payload) => {
+        cards.push(payload)
+        return { messageId: 'm1' }
+      },
+      edit: async () => {},
+    },
+    audit: { record() {} },
+    logger: { warn() {} },
+  }
+
+  const pending = answerApprovalRequest(runtime, { agent: {}, toolName: 'bash', reason: '升级沙箱' })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(cards.length, 1, 'one card per request')
+  const requestId = [...runtime.approvals.pending.keys()][0]
+  assert.ok(requestId, 'the request waits for a click')
+  runtime.approvals.finish(requestId, 'rejected')
+  assert.equal(await pending, 'rejected', 'the rejection reaches DSH')
+
+  // An agent this bridge does not own is left to the Web answerer.
+  assert.equal(
+    await answerApprovalRequest({ ...runtime, agents: { channelForAgent: () => undefined } }, { agent: {} }),
+    (await import('../src/bridge/runtime.js')).DELEGATE,
+  )
+})
+
 test('a refused permission turns the finished card bar red', async () => {
   const { StreamReporter } = await import('../src/bridge/stream-reporter.js')
   const { isPermissionDenial } = await import('../src/bridge/denial.js')

@@ -30,6 +30,7 @@ import { startBridge } from './src/bridge/lifecycle.js'
 import { handleMessage } from './src/bridge/message-router.js'
 import { createInteractionHandler } from './src/bridge/interactions/index.js'
 import { answerUserQuestions } from './src/bridge/interactions/question.js'
+import { answerApprovalRequest } from './src/bridge/interactions/approval.js'
 
 export const name = 'dsh-discord-bridge'
 export const inject = ['agents']
@@ -104,6 +105,26 @@ export function apply(ctx, rawConfig = {}) {
     } catch (error) {
       logger.warn('处理 ask_user_question 失败，按跳过处理:', error?.message || String(error))
       return { answers: questions.map((q) => ({ id: q.id, selected: [] })) }
+    }
+  })
+
+  /**
+   * Answer DSH `approval/request` from Discord.
+   *
+   * DSH asks before a tool escalates its sandbox (or a hook demands a
+   * decision). Without an answerer it fails closed, so a refused or unanswered
+   * card is the difference between "allowed once" and "the turn ends red".
+   * Requests for an agent this bridge does not own are handed to `next()` so
+   * the Web answerer keeps its chance.
+   */
+  ctx.on('approval/request', async (request, next) => {
+    if (runtime.disposed) return next()
+    try {
+      const outcome = await answerApprovalRequest(runtime, request)
+      return outcome === DELEGATE ? next() : outcome
+    } catch (error) {
+      logger.warn('处理 approval 请求失败，交由下一个 answerer:', error?.message || String(error))
+      return next()
     }
   })
 

@@ -351,6 +351,22 @@ DSH 的 `ask_user_question` 会阻塞 agent 直到有人作答。插件注册了
 两个按钮走与其它命令相同的鉴权，每次决定都写入审计日志
 （`button.approve` / `button.reject`）。
 
+### Agent 工具审批也走这张卡片
+
+除了 `/dsh system sudo`，DSH 自己的 `approval/request` 也接到同一套卡片上：
+当工具需要升级沙箱（`sandbox_permissions`）或 hook 要求裁决时，桥接会往该 agent
+所在频道发一张确认卡，按钮点完把 `allowed-once` / `rejected` 回给 DSH。
+
+```text
+工具请求审批 → Discord 卡片 → 批准 = allowed-once（仅本次）
+                            → 拒绝 / 超时 = rejected（DSH 失败关闭）
+                            → 请求被撤回 = cancelled
+```
+
+- 只处理本桥接自己的 agent；反查不到频道时 `next()`，Web 端 answerer 仍有优先机会
+- 卡片 5 分钟失效，超时按拒绝处理；每个决定都写审计（`approval.asked` / `approval.decided`）
+- 被拒绝后这一轮的工具结果会带上 `the user rejected ...`，卡片左侧色条转红
+
 ## 提权执行（`/dsh system sudo`）
 
 DSH 的 bash 工具运行在 `no_new_privs` 沙箱中，进程内**无法**提权——`sudo` 会在
