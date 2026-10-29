@@ -196,7 +196,7 @@ export class DiscordTransport {
     )
   }
 
-  async editInteraction(interaction, text) {
+  async editInteraction(interaction, text, { accentColor } = {}) {
     await this.withAudit(
       'discord',
       'interaction.edit',
@@ -206,7 +206,7 @@ export class DiscordTransport {
         userId: interaction.user?.id,
         detail: { contentLength: String(text || '').length },
       },
-      () => interaction.editReply(normalizePayload(noticeCard(text))),
+      () => interaction.editReply(normalizePayload(noticeCard(text, { accentColor }))),
     )
   }
 
@@ -222,14 +222,16 @@ export class DiscordTransport {
     )
   }
 
-  async replyInteraction(interaction, text, ephemeral = true) {
-    if (interaction.deferred || interaction.replied) return this.editInteraction(interaction, text)
+  async replyInteraction(interaction, text, ephemeral = true, { accentColor } = {}) {
+    if (interaction.deferred || interaction.replied) {
+      return this.editInteraction(interaction, text, { accentColor })
+    }
     await this.withAudit(
       'discord',
       'interaction.reply',
       { channelId: interaction.channelId, guildId: interaction.guildId || undefined, userId: interaction.user?.id },
       () => {
-        const payload = normalizePayload(noticeCard(text))
+        const payload = normalizePayload(noticeCard(text, { accentColor }))
         return interaction.reply(ephemeral ? { ...payload, flags: payload.flags | (1 << 6) } : payload)
       },
     )
