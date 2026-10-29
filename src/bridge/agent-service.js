@@ -494,10 +494,14 @@ export class AgentService {
   /**
    * Exact usage for the card footer, read from the session projections.
    *
-   * `tokenUsage` accumulates every billed request in the session, which is what
-   * the cache hit rate means; `contextPressure` carries the newest prompt size
-   * and the route's capacity. Both are optional — a turn where the provider
-   * reported nothing simply omits the footer bits instead of inventing numbers.
+   * `request` is the provider-reported usage of the newest billed request — the
+   * same number the official console shows for a call, which is why the cache
+   * hit rate is taken from it rather than from the session-wide average.
+   * `tokenUsage` totals stay as the fallback for a session whose last step
+   * recorded no buckets, and `contextPressure` carries the newest prompt size
+   * and the route's capacity. Everything is optional: a turn where the
+   * provider reported nothing omits the footer bits instead of inventing
+   * numbers.
    */
   usageSnapshot(session) {
     if (!session) return undefined
@@ -506,8 +510,15 @@ export class AgentService {
       const snapshot = projections?.snapshot?.(session, ['tokenUsage', 'contextPressure'])
       const usage = snapshot?.values?.tokenUsage
       const pressure = snapshot?.values?.contextPressure
-      if (!usage && !pressure) return undefined
-      return { ...(usage ?? {}), ...(pressure ?? {}) }
+      // The wire view only carries session totals; the last request's buckets
+      // live in the unit's host state.
+      const last = projections?.stateOf?.(session, 'tokenUsage')?.last
+      if (!usage && !pressure && !last) return undefined
+      return {
+        ...(usage ?? {}),
+        ...(pressure ?? {}),
+        ...(last ? { request: { turn: last.turn, step: last.step, ...last.buckets } } : {}),
+      }
     } catch (error) {
       this.logger.warn?.('读取 token 用量失败:', error?.message || String(error))
       return undefined

@@ -861,15 +861,28 @@ test('usage footer reports the session cache hit rate and context occupancy', as
   )
   // An exact full hit is still reported as 100%.
   assert.equal(formatUsage({ cacheReadTokens: 1000, uncachedInputTokens: 0 }), '缓存 100%')
+  // The newest request's own buckets win over the session average: 208512 of
+  // 208820 prompt tokens, which rounds to 99.9% rather than the 99.5% average.
+  assert.equal(
+    formatUsage({
+      cacheReadTokens: 20_542_976,
+      uncachedInputTokens: 93_681,
+      request: { cacheReadTokens: 208_512, uncachedInputTokens: 308 },
+    }),
+    '缓存 99.9%',
+  )
 })
 
 test('usage snapshot merges the session projections and tolerates absence', async () => {
   const { AgentService } = await import('../src/bridge/agent-service.js')
-  const make = (snapshot, hasService = true) =>
+  const make = (snapshot, hasService = true, last = undefined) =>
     new AgentService({
       ctx: {
         on: () => () => {},
-        get: (name) => (hasService && name === 'sessionProjections' ? { snapshot: () => snapshot } : undefined),
+        get: (name) =>
+          hasService && name === 'sessionProjections'
+            ? { snapshot: () => snapshot, stateOf: () => (last ? { last } : undefined) }
+            : undefined,
       },
       config: {},
       state: {},
@@ -893,6 +906,24 @@ test('usage snapshot merges the session projections and tolerates absence', asyn
     cacheWriteTokens: 0,
     projectedTokens: 1000,
     contextWindow: 8000,
+  })
+  const withLast = make(payload, true, {
+    turn: 10,
+    step: 2,
+    buckets: {
+      cacheReadTokens: 208_512,
+      uncachedInputTokens: 308,
+      outputTokens: 405,
+      cacheWriteTokens: 0,
+    },
+  })
+  assert.deepEqual(withLast.usageSnapshot({}).request, {
+    turn: 10,
+    step: 2,
+    cacheReadTokens: 208_512,
+    uncachedInputTokens: 308,
+    outputTokens: 405,
+    cacheWriteTokens: 0,
   })
   assert.equal(make({ values: {} }).usageSnapshot({}), undefined, 'no projection data yet')
   assert.equal(make(undefined, false).usageSnapshot({}), undefined, 'token-meter not mounted')
