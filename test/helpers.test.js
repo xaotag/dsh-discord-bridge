@@ -218,7 +218,9 @@ test('reporter streams the answer card and finishes into a status card', async (
   const last = transport.calls.edits.at(-1)
   assert.equal(last.messageId, 'm1', 'final edit reuses the streaming message')
   const finals = flattenTexts(last.payload.components)
-  assert.ok(finals.some((t) => /✅ 已完成/.test(t)), 'final card shows the completed title')
+  // Status is the container accent now; no heading competes with the answer.
+  assert.ok(!finals.some((t) => /已完成|正在生成/.test(t)), 'no status heading on the card')
+  assert.equal(last.payload.components[0].accent_color, 0x57f287, 'green bar when done')
   assert.ok(finals.some((t) => /hello world/.test(t)), 'final card carries the answer')
   // The finished card must not carry the stop button any more.
   assert.equal(findCustomId(last.payload.components, 'dsh:stop:m1'), undefined)
@@ -290,7 +292,7 @@ test('tool calls render inline in the answer card, never as a second message', a
   const finals = flattenTexts(transport.calls.edits.at(-1).payload.components).join('\n')
   assert.match(finals, /bash/, 'the tool history survives into the final card')
   assert.match(finals, /read/)
-  assert.match(finals, /✅ 已完成/)
+  assert.ok(!/已完成/.test(finals), 'the status heading is gone; the accent carries it')
 })
 
 test('reporter edit interval backs off for long cards and stays under 4.5s', () => {
@@ -834,6 +836,29 @@ test('separators divide body from footer', async () => {
   const payload = streamCard('body', { model: 'm', startedAt: Date.now() - 1000 })
   const kinds = payload.components[0].components.map((c) => c.type)
   assert.ok(kinds.includes(14), 'a separator is emitted before the footer')
+})
+
+test('a refused permission turns the finished card bar red', async () => {
+  const { StreamReporter } = await import('../src/bridge/stream-reporter.js')
+  const { isPermissionDenial } = await import('../src/bridge/denial.js')
+
+  // DSH fails closed on approval: these are the verbatim tool errors.
+  assert.ok(isPermissionDenial({ message: { isError: true, content: [{ type: 'text', text: 'the user rejected escalating this command to "workspace-write"; it stays denied' }] } }))
+  assert.ok(isPermissionDenial({ message: { isError: true, content: [{ type: 'text', text: 'sandbox escalation to "danger-full-access" requires approval, but no approval channel is available' }] } }))
+  assert.ok(isPermissionDenial({ message: { isError: true, content: [{ type: 'text', text: '[sandbox: file access denied under workspace-write mode]' }] } }))
+  // A plain tool failure is not a refusal.
+  assert.ok(!isPermissionDenial({ message: { isError: true, content: [{ type: 'text', text: 'Error: invalid arguments: missing required property "description"' }] } }))
+  assert.ok(!isPermissionDenial({ message: { isError: false, content: [{ type: 'text', text: 'permission denied in the log' }] } }), 'successful calls never turn red')
+
+  const transport = fakeTransport()
+  const reporter = new StreamReporter({ transport, channelId: 'c1', intervalMs: 0, logger: { warn() {} } })
+  await reporter.begin()
+  reporter.onTextDelta('试一下')
+  reporter.onToolResult({ message: { isError: true, content: [{ type: 'text', text: 'the user rejected escalating this command to "workspace-write"' }] } })
+  await reporter.finish('没有权限，放弃了。', 'completed')
+  const last = transport.calls.edits.at(-1)
+  assert.equal(last.payload.components[0].accent_color, 0xed4245, 'red bar after a refusal')
+  assert.ok(flattenTexts(last.payload.components).some((t) => /没有权限/.test(t)), 'the answer still shows')
 })
 
 test('usage footer reports the session cache hit rate and context occupancy', async () => {

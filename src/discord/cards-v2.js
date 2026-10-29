@@ -150,12 +150,11 @@ export function placeholderCard(text = '⏳ 已接收，正在处理…') {
  */
 export function streamCard(
   text,
-  { startedAt, model, reasoningEffort, caption, title, accentColor, tools, toolLines } = {},
+  { startedAt, model, reasoningEffort, caption, accentColor, tools, toolLines } = {},
 ) {
   const body = toolLines === undefined ? interleaveTools(text, tools) : composeBody(text, toolLines)
   return cardPayload({
     accentColor: accentColor ?? ACCENT.thinking,
-    title,
     body,
     footer: footerBits({ startedAt, model, reasoningEffort, caption }),
   })
@@ -321,21 +320,27 @@ function shortenPath(path, { maxWidth = 52 } = {}) {
   return `…${clean.slice(-(maxWidth - 1))}`
 }
 
-/** Final answer card in one of the terminal states, with interleaved tool lines. */
+/**
+ * Final answer card in one of the terminal states, with interleaved tool lines.
+ *
+ * No heading: Discord already paints the container's left bar, so the accent
+ * colour is the whole status display (blue while streaming, green done, red
+ * failed or refused). `meta.accentColor` lets the caller force red for a turn
+ * that finished but whose permission request was refused.
+ */
 export function finalCard(text, status = 'completed', meta = {}) {
-  const { title, accent } = FINAL_STATES[status] ?? FINAL_STATES.completed
+  const state = FINAL_STATES[status] ?? FINAL_STATES.completed
   return cardPayload({
-    accentColor: accent,
-    title,
+    accentColor: meta.accentColor ?? state.accent,
     body: interleaveTools(text, meta.tools),
     footer: footerBits({ ...meta, caption: meta.caption }),
   })
 }
 
 export const FINAL_STATES = {
-  completed: { title: '✅ 已完成', accent: ACCENT.completed },
-  cancelled: { title: '⏹️ 已停止', accent: ACCENT.cancelled },
-  failed: { title: '❌ 执行失败', accent: ACCENT.failed },
+  completed: { accent: ACCENT.completed },
+  cancelled: { accent: ACCENT.cancelled },
+  failed: { accent: ACCENT.failed },
 }
 
 /** Notification / command reply card. */
