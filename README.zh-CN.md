@@ -129,11 +129,11 @@ Discord 内查看当前频道最近操作：
 /dsh system audit
 ```
 
-## 流式与 UI 行为（Embed 卡片）
+## 流式与 UI 行为（Components V2 卡片）
 
-所有对话消息都以 **Discord Embed 卡片** 形式渲染，不再发纯文本。
+所有对话消息都以 **Components V2 卡片** 形式渲染：一个 Container 内放 Text Display、Separator 和 Action Row，不再使用旧版的 `content`/`embeds` 字段。
 
-| 卡片 | 标题 | 颜色 | 内容 |
+| 卡片 | 标题 | 强调色 | 内容 |
 |---|---|---|---|
 | 占位 / 答案（流式） | `⏳ 正在生成…` | 蓝 `#5865F2` | 聚合中的 assistant 文本 |
 | 工具调用（持久） | `🛠 工具调用` | 琥珀 `#FAA61A` | 代码块内一行一次调用：`✓ bash  描述` |
@@ -165,11 +165,30 @@ embed。答案卡片原地编辑，长任务下历史不丢失。
 |---|---|---|
 | `# 标题` | **原样保留** | Text Display 渲染 ATX 标题 |
 | 列表 / 嵌套 | **原样保留** | Text Display 支持嵌套缩进 |
-| 表格 | → 代码块内按记录分行 | **任何** Discord 界面都没有表格语法；中英混排无法用空格对齐 |
+| 表格 | → `a \| b` 分隔行，表头加粗 | **任何** Discord 界面都没有表格语法；中英混排无法用空格对齐 |
 | 代码块内容 | **原样保护** | 不做任何改写 |
 
-关键细节：列宽按 `displayWidth()` 计算，中日韩字符和 emoji 各占 **2 格**，
-用 `String.length` 补空格会导致中文列错位——这是之前表格对齐失败的根因。
+### 组件上限（来自官方 Component Reference）
+
+桥接在发送前会按文档校验每个 payload：
+
+| 上限 | 值 |
+|---|---|
+| 单条消息组件数 | 40（递归统计） |
+| 单条消息可显示文本总量 | 4000 字符 |
+| 单个 Text Display | 1–4000 字符 |
+| 单个 Action Row | 5 个按钮，或恰好 1 个 select |
+| String Select | 25 个选项（label/value/description 100，placeholder 150） |
+| Button label / custom_id | 80 / 100 字符 |
+| Modal | 5 个组件，标题 45，Label 45，description 100 |
+| Text Input | min 0、max 4000，placeholder 100，value 4000 |
+
+超过上限会在构建卡片时直接抛错，不再等 Discord 返回 `400 BAD REQUEST`。设置
+`IS_COMPONENTS_V2` 后，payload 中的 `content`、`embeds`、`stickers`、`poll` 和
+`shared_client_theme` 会被清除——这些字段与 V2 标志互斥。
+
+表格不再尝试补空格对齐：每行保留原始 `|` 分隔符，表头加粗，`---` 规则行丢弃。
+按显示宽度补列曾被验证会失败——中文字符并非在所有客户端都恰好占两个等宽格。
 
 ## Thread 隔离
 
