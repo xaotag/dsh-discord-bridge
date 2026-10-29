@@ -165,6 +165,27 @@ blank line. The description is chosen in this order:
 Other tools show the bare name. Argument values — commands, URLs, prompts — are never
 rendered, and long paths are shortened to `…/src/file.js`.
 
+### Card footer
+
+Every completed / stopped / failed card ends with a small print line built from fixed
+fields, in this order:
+
+```text
+model (effort) · 1m30s · cache 87% · context 42.0k/128k (33%) · 5 tool calls, 1m30s
+```
+
+| Field | Source | Rule |
+|---|---|---|
+| Cache hit rate | `tokenUsage` projection (per session, exact) | `cacheRead / (uncachedInput + cacheRead + cacheWrite)`, rounded to a percentage |
+| Context occupancy | `contextPressure` projection | `projectedTokens` (what the next prompt would cost, including this turn's output), falling back to `pressureTokens` (newest request prompt); the window and a percentage are appended when the route advertised one |
+| Elapsed | wall clock of the turn | — |
+| Tool line | calls made this turn | count and total duration only |
+
+Both projections are folded by token-meter from the session event stream; the bridge
+only reads them. When a figure is unavailable (older session, no billed request yet)
+the field is omitted instead of guessed. Numbers print as `999`, `42.0k`, `128k`,
+`1.1M`.
+
 ### Markdown adaptation (Components V2)
 
 Every card renders through a **Text Display** component, which supports the

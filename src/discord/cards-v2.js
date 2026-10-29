@@ -562,15 +562,62 @@ export function withStopRow(payload, messageId, { prefix, label = '停止' } = {
   })
 }
 
-function footerBits({ startedAt, model, reasoningEffort, caption } = {}) {
+function footerBits({ startedAt, model, reasoningEffort, caption, usage } = {}) {
   const bits = []
   if (model) bits.push(`${model}${reasoningEffort ? ` (effort:${reasoningEffort})` : ''}`)
   if (startedAt) {
     const elapsed = Date.now() - startedAt
     if (elapsed > 0) bits.push(`耗时 ${formatElapsed(elapsed)}`)
   }
+  const usageBits = formatUsage(usage)
+  if (usageBits) bits.push(usageBits)
   if (caption) bits.push(caption)
   return bits.join(' · ')
+}
+
+/**
+ * Footer readout for provider-reported usage.
+ *
+ * `cacheReadTokens` and `uncachedInputTokens` are the session's cumulative exact
+ * accounting, so the ratio is the cache hit rate over everything this
+ * conversation has sent. `projectedTokens` is what the next request's prompt
+ * would cost, which is the number that actually answers "how full is the
+ * context"; `pressureTokens` is the newest provider sample before the current
+ * turn's own output.
+ */
+export function formatUsage({
+  cacheReadTokens,
+  uncachedInputTokens,
+  cacheWriteTokens,
+  pressureTokens,
+  projectedTokens,
+  contextWindow,
+} = {}) {
+  const bits = []
+  const cacheRead = Number.isFinite(cacheReadTokens) ? cacheReadTokens : undefined
+  if (cacheRead !== undefined) {
+    const prompt =
+      cacheRead +
+      (Number.isFinite(uncachedInputTokens) ? uncachedInputTokens : 0) +
+      (Number.isFinite(cacheWriteTokens) ? cacheWriteTokens : 0)
+    if (prompt > 0) bits.push(`缓存 ${Math.round((cacheRead / prompt) * 100)}%`)
+  }
+  const used = Number.isFinite(projectedTokens) ? projectedTokens : pressureTokens
+  if (Number.isFinite(used)) {
+    const window = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : undefined
+    const percent = window ? ` (${Math.round((used / window) * 100)}%)` : ''
+    bits.push(`上下文 ${formatTokens(used)}${window ? `/${formatTokens(window)}` : ''}${percent}`)
+  }
+  return bits.join(' · ')
+}
+
+/** 1234 -> 1.2k, 128000 -> 128k, 1100000 -> 1.1M. */
+function formatTokens(count) {
+  if (!Number.isFinite(count) || count < 0) return '0'
+  if (count < 1000) return String(Math.round(count))
+  if (count < 100_000) return `${(count / 1000).toFixed(1)}k`
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`
+  return `${(count / 1_000_000).toFixed(1)}M`
 }
 
 function formatElapsed(ms) {

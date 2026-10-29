@@ -465,7 +465,7 @@ export class AgentService {
           durationMs: Date.now() - startedAt,
           detail: { replyLength: finalText.trim().length },
         })
-        return { text: finalText.trim(), status: runtime.status }
+        return { text: finalText.trim(), status: runtime.status, usage: this.usageSnapshot(agent.session) }
       } catch (error) {
         this.audit?.record({
           category: 'agent',
@@ -488,6 +488,29 @@ export class AgentService {
     } finally {
       runtime.pendingDeliveries -= 1
       runtime.lastUsed = Date.now()
+    }
+  }
+
+  /**
+   * Exact usage for the card footer, read from the session projections.
+   *
+   * `tokenUsage` accumulates every billed request in the session, which is what
+   * the cache hit rate means; `contextPressure` carries the newest prompt size
+   * and the route's capacity. Both are optional — a turn where the provider
+   * reported nothing simply omits the footer bits instead of inventing numbers.
+   */
+  usageSnapshot(session) {
+    if (!session) return undefined
+    try {
+      const projections = this.ctx.get('sessionProjections')
+      const snapshot = projections?.snapshot?.(session, ['tokenUsage', 'contextPressure'])
+      const usage = snapshot?.values?.tokenUsage
+      const pressure = snapshot?.values?.contextPressure
+      if (!usage && !pressure) return undefined
+      return { ...(usage ?? {}), ...(pressure ?? {}) }
+    } catch (error) {
+      this.logger.warn?.('读取 token 用量失败:', error?.message || String(error))
+      return undefined
     }
   }
 

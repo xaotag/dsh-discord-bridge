@@ -87,7 +87,7 @@ export async function runPrompt(
   const meta = { channelId: key, guildId, kind }
   try {
     const result = await agents.run(key, meta, prompt, reporter, { greeting: isGreeting })
-    await reporter.finish(result.text, result.status)
+    await reporter.finish(result.text, result.status, result.usage)
     return { ...result, threadId: thread?.channelId, channelId: targetChannelId }
   } catch (error) {
     logger.warn('任务执行失败:', error?.stack || error?.message || String(error))
