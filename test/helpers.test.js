@@ -904,6 +904,7 @@ test('a click rewrites the approval card to a green or red decided state', async
 
   const run = async (prefix, decision) => {
     const edits = []
+    const receipts = []
     const approvals = new ApprovalRegistry({ timeoutMs: 60_000, logger: { warn() {} } })
     const request = approvals.create({ channelId: 'c1' })
     const runtime = {
@@ -914,7 +915,7 @@ test('a click rewrites the approval card to a green or red decided state', async
       transport: {
         deferButton: async () => {},
         editComponentReply: async (_interaction, payload) => edits.push(payload),
-        replyEphemeral: async () => {},
+        replyEphemeral: async (_interaction, text, options) => receipts.push({ text, ...options }),
       },
     }
     const interaction = {
@@ -938,16 +939,45 @@ test('a click rewrites the approval card to a green or red decided state', async
       }
     }
     walk(edits[0].components)
-    return { payload: edits[0], text: texts.join('\n') }
+    return { payload: edits[0], text: texts.join('\n'), receipt: receipts[0] }
   }
 
   const approved = await run(APPROVE_BUTTON_PREFIX, 'approved')
   assert.match(approved.text, /已批准/)
   assert.equal(approved.payload.components[0].accent_color, 0x57f287, 'approved bar is green')
+  assert.equal(approved.receipt.accentColor, 0x57f287, 'the private receipt is green too')
 
   const rejected = await run(REJECT_BUTTON_PREFIX, 'rejected')
   assert.match(rejected.text, /已拒绝/)
   assert.equal(rejected.payload.components[0].accent_color, 0xed4245, 'rejected bar is red')
+  assert.equal(rejected.receipt.accentColor, 0xed4245, 'the private receipt is red too')
+})
+
+test('the private receipt card is painted with the colour it was given', async () => {
+  const { DiscordTransport } = await import('../src/discord/transport.js')
+  const { ACCENT } = await import('../src/discord/cards-v2.js')
+  const transport = new DiscordTransport({ logger: { warn() {} } })
+
+  const send = async (text, options) => {
+    let payload
+    const interaction = {
+      channelId: 'c1',
+      user: { id: 'u1' },
+      customId: 'dsh:reject:abc',
+      reply: async (value) => {
+        payload = value
+      },
+    }
+    await transport.replyEphemeral(interaction, text, options)
+    return payload
+  }
+
+  const denied = await send('已拒绝。', { accentColor: ACCENT.failed })
+  assert.equal(denied.components[0].accent_color, 0xed4245, 'a refusal is red')
+  assert.equal(denied.flags & (1 << 6), 1 << 6, 'the receipt stays private')
+
+  const plain = await send('你不在授权名单内。')
+  assert.equal(plain.components[0].accent_color, ACCENT.notice, 'other notices keep the notice colour')
 })
 
 test('DSH approval requests are answered from a Discord card', async () => {

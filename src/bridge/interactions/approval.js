@@ -5,7 +5,7 @@
  * posting the card and translating the button click back into an outcome.
  */
 import { APPROVE_BUTTON_PREFIX, REJECT_BUTTON_PREFIX } from '../../discord/renderer.js'
-import { approvalCard, decidedApprovalCard } from '../../discord/cards-v2.js'
+import { ACCENT, approvalCard, decidedApprovalCard } from '../../discord/cards-v2.js'
 import { DELEGATE } from '../runtime.js'
 import { startCountdown } from './countdown.js'
 
@@ -226,7 +226,9 @@ export async function handleApprovalButton(runtime, interaction, customId, { aut
   }
 
   await transport
-    .replyEphemeral(interaction, approved ? '已批准。' : '已拒绝。')
+    .replyEphemeral(interaction, approved ? '已批准。' : '已拒绝。', {
+      accentColor: approved ? ACCENT.completed : ACCENT.failed,
+    })
     .catch(() => undefined)
   return true
 }

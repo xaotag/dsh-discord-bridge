@@ -295,8 +295,10 @@ export class DiscordTransport {
    * would overwrite the card the operator just acted on and wipe the state text
    * the interaction was updating.
    */
-  async replyEphemeral(interaction, text) {
-    const payload = normalizePayload(noticeCard(text))
+  async replyEphemeral(interaction, text, { accentColor } = {}) {
+    // The receipt echoes a decision, so it takes the decision's colour: a blue
+    // "已拒绝。" sitting next to a red card reads like two different outcomes.
+    const payload = normalizePayload(noticeCard(text, { accentColor }))
     const ephemeral = { ...payload, flags: (payload.flags ?? 0) | (1 << 6) }
     await this.withAudit(
       'discord',
