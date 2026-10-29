@@ -26,7 +26,7 @@ const GROUPS = {
  */
 export async function handleCommand(
   runtime,
-  { group, command, arg, channelId, guildId, kind, target, replyToMessageId },
+  { group, command, arg, channelId, conversationKey, guildId, kind, target, replyToMessageId },
 ) {
   const commandUserId = target?.user?.id || target?.author?.id || target?.member?.user?.id
   const handler = GROUPS[group]
@@ -35,6 +35,7 @@ export async function handleCommand(
       command,
       arg,
       channelId,
+      conversationKey,
       guildId,
       kind,
       target,

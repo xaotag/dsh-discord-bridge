@@ -31,6 +31,25 @@ export function subagentThreadKey(conversationKey, childSessionId) {
   return `${conversationKey}\u0000${childSessionId}`
 }
 
+/**
+ * Key of the conversation a Discord message belongs to.
+ *
+ * A Thread is a *view* of the conversation that spawned it, not a new
+ * conversation: auto-threaded tasks used to key on the thread id, so every
+ * complex prompt created a fresh DSH Session and lost the channel's context.
+ * A thread therefore inherits its parent channel's key.
+ *
+ * Threads that already own a Session keep it. Bindings made before threads
+ * inherited context (`/dsh session bind` inside a thread, or a task that ran
+ * while the old keying was live) must keep resuming their own Session instead
+ * of silently jumping to the parent's.
+ */
+export function conversationKeyFor(runtime, { channelId, kind, parentId } = {}) {
+  if (!channelId) return channelId
+  if (kind !== 'thread' || !parentId) return channelId
+  return runtime?.state?.hasSession?.(channelId) ? channelId : parentId
+}
+
 export function createLogger() {
   return {
     log: (...args) => console.log(PLUGIN, ...args),

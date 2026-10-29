@@ -28,7 +28,7 @@ import {
   handleDeepSeekAutocomplete,
   handleDeepSeekInteraction,
 } from './slash.js'
-import { safeError } from '../runtime.js'
+import { conversationKeyFor, safeError } from '../runtime.js'
 
 /**
  * "停止" button on a streaming card.
@@ -188,6 +188,13 @@ export function createInteractionHandler(runtime) {
 
     const guildId = interaction.guildId || undefined
     const kind = guildId === undefined ? 'dm' : interaction.channel?.isThread?.() ? 'thread' : 'channel'
+    // Slash commands obey the same session ownership as plain messages: a
+    // thread routes to the conversation that owns it, not to a new one.
+    const conversationKey = conversationKeyFor(runtime, {
+      channelId,
+      kind,
+      parentId: interaction.channel?.parentId || undefined,
+    })
     try {
       if (!authorized(config, interaction.user.id, guildId, channelId)) {
         await transport.editInteraction(interaction, '你不在授权名单内。')
@@ -216,6 +223,7 @@ export function createInteractionHandler(runtime) {
       await handleCommand(runtime, {
         ...normalized,
         channelId,
+        conversationKey,
         guildId,
         kind,
         target: interaction,

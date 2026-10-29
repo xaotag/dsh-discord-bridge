@@ -11,7 +11,7 @@ import { readImageAttachments, readTextAttachments, splitAttachments } from '../
 import { parseTextCommand } from '../discord/commands.js'
 import { parseDeepSeekTextCommand } from '../discord/deepseek-commands.js'
 import { noticeCard, placeholderCard } from '../discord/cards-v2.js'
-import { greeting, MENTION_FOLLOWUP_WINDOW_MS, safeError } from './runtime.js'
+import { conversationKeyFor, greeting, MENTION_FOLLOWUP_WINDOW_MS, safeError } from './runtime.js'
 import { handleCommand } from './commands/index.js'
 import { runPrompt } from './prompt-runner.js'
 
@@ -27,7 +27,10 @@ export async function handleMessage(runtime, message) {
   if (!authorized(config, message.author.id, guildId, channelId)) return
 
   const kind = guildId === undefined ? 'dm' : message.channel?.isThread?.() ? 'thread' : 'channel'
-  const key = channelId
+  const parentId = message.channel?.parentId || undefined
+  // A thread answers into the conversation that created it; keying on the
+  // thread id would spawn a new Session for every auto-threaded prompt.
+  const key = conversationKeyFor(runtime, { channelId, kind, parentId })
   // Remember where the conversation is happening: a user-questions request
   // carries no channel, and this is the card's only sensible destination.
   runtime.lastActiveChannelId = channelId
@@ -113,6 +116,7 @@ export async function handleMessage(runtime, message) {
       await handleCommand(runtime, {
         ...command,
         channelId,
+        conversationKey: key,
         guildId,
         kind,
         target: channelId,
@@ -132,7 +136,9 @@ export async function handleMessage(runtime, message) {
       replyToMessageId: message.id,
       attachmentCount: attachments.length,
       images,
-      boundChannelId: kind === 'thread' ? channelId : undefined,
+      // The resolved conversation, not the channel: an auto-created thread is
+      // a presentation surface and must not take the Session with it.
+      boundChannelId: key,
     })
   } catch (error) {
     logger.warn(`处理消息失败 (${channelId}):`, error?.stack || error?.message || String(error))
@@ -142,7 +148,7 @@ export async function handleMessage(runtime, message) {
       status: 'error',
       channelId,
       guildId,
-      conversation: channelId,
+      conversation: key,
       userId: message.author.id,
       error: error?.message || String(error),
     })

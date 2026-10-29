@@ -44,9 +44,10 @@ export async function runPrompt(
     })
   const thread = shouldThread ? await threads.create(channelId, prompt) : undefined
   const targetChannelId = thread?.channelId || channelId
-  // A manually bound conversation keeps its Session even when a thread is
-  // created for presentation: route the turn to the binding key.
-  const key = boundChannelId || targetChannelId
+  // The Session belongs to the conversation, not to wherever the output is
+  // rendered. Keying on the fresh thread id here is what made every
+  // auto-threaded prompt create a new Session and lose the channel's context.
+  const key = boundChannelId || channelId
 
   // Child threads belong to the turn that opened them. Clearing the index first
   // keeps a question this turn from being routed to a thread from an earlier
@@ -84,7 +85,7 @@ export async function runPrompt(
       showReasoning: true,
       subagentThreads: config.subagentThreads,
       onSubagentThread,
-      ...routeMeta(runtime, boundChannelId || thread.channelId),
+      ...routeMeta(runtime, key),
     })
     await reporter.begin()
   } else {
@@ -97,7 +98,7 @@ export async function runPrompt(
       showReasoning: false,
       subagentThreads: config.subagentThreads,
       onSubagentThread,
-      ...routeMeta(runtime, boundChannelId || channelId),
+      ...routeMeta(runtime, key),
     })
     await reporter.begin()
   }
