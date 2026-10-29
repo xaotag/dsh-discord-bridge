@@ -1350,20 +1350,20 @@ test('a pending card shows a real countdown that ticks', async () => {
   assert.ok(seconds[0] > seconds.at(-1), `countdown decreases: ${seconds.join(' → ')}`)
 })
 
-test('the countdown text carries a client-side relative timestamp', async () => {
+test('the countdown text is plain seconds, with no unrendered markup', async () => {
   const { questionCard } = await import('../src/discord/cards-v2.js')
-  const expiresAt = Date.now() + 120_000
   const card = questionCard({
     requestId: 'r',
     index: 0,
     total: 1,
     question: { question: '?' },
-    expiresAt,
+    expiresAt: Date.now() + 120_000,
   })
   const line = flattenTexts(card.components).find((t) => t.includes('剩余'))
-  // `<t:UNIX:R>` keeps ticking on the client even if a refresh is missed.
-  assert.match(line, new RegExp(`<t:${Math.floor(expiresAt / 1000)}:R>`))
   assert.match(line, /剩余 120s/)
+  // Discord's <t:UNIX:R> markup is not rendered inside a Text Display, so it
+  // would show up literally — the countdown loop is the only mechanism.
+  assert.ok(!line.includes('<t:'), 'no timestamp markup in the footer')
 })
 
 test('the countdown stops itself once the deadline passes', async () => {

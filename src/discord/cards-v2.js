@@ -100,15 +100,13 @@ export function cardPayload({
 /**
  * Countdown text for a card footer.
  *
- * Two pieces on purpose: `<t:UNIX:R>` is rendered by Discord and keeps ticking on
- * the client with no message edit, while the remaining seconds are exact at the
- * moment the card is built. A countdown loop re-renders the card so the seconds
- * stay real; if a refresh is missed, the timestamp is still correct.
+ * Plain seconds only: Discord's `<t:UNIX:R>` markup is not rendered inside a
+ * Text Display component, so it would appear literally. The number is kept
+ * accurate by the countdown loop re-rendering the card instead.
  */
-function formatCountdown(expiresAt, remainingMs) {
+function formatCountdown(_expiresAt, remainingMs) {
   const seconds = Math.max(0, Math.ceil(remainingMs / 1000))
-  const unix = Math.floor(expiresAt / 1000)
-  return `⏳ 剩余 ${seconds}s（<t:${unix}:R> 失效）`
+  return `⏳ 剩余 ${seconds}s 失效`
 }
 
 function clampHeading(level) {
