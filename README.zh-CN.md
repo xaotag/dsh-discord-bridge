@@ -166,7 +166,7 @@ embed。答案卡片原地编辑，长任务下历史不丢失。
 
 | 字段 | 来源 | 算法 |
 |---|---|---|
-| 缓存命中率 | `tokenUsage` 投影（本 Session 累计，精确值） | `cacheRead / (uncachedInput + cacheRead + cacheWrite)`，取整到百分比 |
+| 缓存命中率 | `tokenUsage` 投影（本 Session 累计，精确值） | `cacheRead / (uncachedInput + cacheRead + cacheWrite)`，取整到百分比；99.5% 以上保留一位小数（99.546% 会显示 99.5% 而不是四舍五入成 100%） |
 | 上下文占用 | `contextPressure` 投影 | 优先 `projectedTokens`（下一次请求的 prompt 大小，含本轮回写），退回 `pressureTokens`（最近一次请求的 prompt）；有 `contextWindow` 时附上限与百分比 |
 | 耗时 | 本轮墙钟时间 | — |
 | 工具行 | 本轮工具调用 | 只显示次数与总耗时 |

@@ -600,7 +600,14 @@ export function formatUsage({
       cacheRead +
       (Number.isFinite(uncachedInputTokens) ? uncachedInputTokens : 0) +
       (Number.isFinite(cacheWriteTokens) ? cacheWriteTokens : 0)
-    if (prompt > 0) bits.push(`缓存 ${Math.round((cacheRead / prompt) * 100)}%`)
+    if (prompt > 0) {
+      const rate = (cacheRead / prompt) * 100
+      // A cumulative rate sits just under 100% once the prefix is cached; a
+      // rounded "100%" reads like a broken counter, so keep one decimal there.
+      const label =
+        rate < 100 && rate >= 99.5 ? `${Math.min(rate, 99.9).toFixed(1)}%` : `${Math.round(rate)}%`
+      bits.push(`缓存 ${label}`)
+    }
   }
   const used = Number.isFinite(projectedTokens) ? projectedTokens : pressureTokens
   if (Number.isFinite(used)) {
