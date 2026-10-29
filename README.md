@@ -389,6 +389,25 @@ Both buttons go through the same authorization check as every other command,
 and each decision is written to the audit log as `button.approve` /
 `button.reject`.
 
+### Agent tool approvals use the same card
+
+Beyond `/dsh system sudo`, the bridge answers DSH's own `approval/request`: when a
+tool asks to widen its sandbox (or a hook demands a decision), a confirmation card is
+posted in the agent's channel and the click returns `allowed-once` / `rejected` to DSH.
+
+```text
+tool asks → Discord card → approve = allowed-once (this call only)
+                         → reject / timeout = rejected (DSH fails closed)
+                         → request withdrawn = cancelled
+```
+
+- only agents this bridge owns are answered; an unresolvable channel goes to `next()`
+  so the Web answerer keeps its chance
+- cards expire after 5 minutes and a timeout counts as a refusal; every decision is
+  audited (`approval.asked` / `approval.decided`)
+- after a refusal the turn's tool result carries `the user rejected ...`, which turns
+  the card's left bar red
+
 ## Privileged execution (`/dsh system sudo`)
 
 The bash tool runs under `no_new_privs`, so the DSH process **cannot** escalate:
