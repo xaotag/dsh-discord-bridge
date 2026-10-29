@@ -146,10 +146,11 @@ export async function answerApprovalRequest(runtime, request) {
       detail: { requestId: entry.id, decision, toolName: request?.toolName },
     })
 
-    if (messageId) {
-      const shown = decision === 'approved' ? 'approved' : 'rejected'
+    // A click already rewrote the card through the interaction; only a timeout
+    // or a withdrawn request has to be reflected here.
+    if (messageId && (decision === 'timeout' || decision === 'cancelled')) {
       await transport
-        .edit(channelId, messageId, decidedApprovalCard(shown))
+        .edit(channelId, messageId, decidedApprovalCard(decision))
         .catch((error) => logger.warn?.('更新确认卡片失败:', error?.message || String(error)))
     }
     return approvalOutcome(decision)
@@ -208,12 +209,20 @@ export async function handleApprovalButton(runtime, interaction, customId, { aut
   })
 
   try {
+    // Editing through the interaction updates the exact message that was
+    // clicked, and survives a stale channel cache the way a REST edit does not.
+    await transport.editComponentReply(interaction, decidedApprovalCard(decision))
+  } catch (error) {
     const messageId = interaction.message?.id
     if (messageId) {
-      await transport.edit(channelId, messageId, decidedApprovalCard(decision))
+      await transport
+        .edit(channelId, messageId, decidedApprovalCard(decision))
+        .catch((fallbackError) =>
+          logger.warn('更新确认卡片失败:', fallbackError?.message || String(fallbackError)),
+        )
+    } else {
+      logger.warn('更新确认卡片失败:', error?.message || String(error))
     }
-  } catch (error) {
-    logger.warn('更新确认卡片失败:', error?.message || String(error))
   }
 
   await transport

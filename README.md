@@ -379,6 +379,20 @@ approval card yields two buttons:
 | ✅ 批准 | Green | `approved` |
 | 🚫 拒绝 | Red | `rejected` |
 
+The card is rewritten in place to its terminal state (through the interaction, so no
+other message is touched) and the bar follows the outcome:
+
+| Outcome | Title | Accent |
+|---|---|---|
+| approved | `✅ 已批准` | green `#57F287` |
+| rejected | `🚫 已拒绝` | red `#ED4245` |
+| timeout | `⏹️ 已超时` | grey `#99AAB5` (counts as a refusal) |
+| withdrawn | `🚫 已取消` | grey `#99AAB5` |
+
+The click acknowledgement is a **private follow-up**, not a card edit: the old `editReply`
+path overwrote the card that had just been answered, which looked like "the click did
+nothing and the colour never changed".
+
 The requesting turn awaits the decision (`approved` / `rejected` / `timeout`);
 it never throws, so a timeout is safe to treat as a refusal. Unanswered cards
 expire after 5 minutes and the buttons are stripped once a decision is made.

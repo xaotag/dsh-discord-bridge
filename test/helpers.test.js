@@ -838,6 +838,59 @@ test('separators divide body from footer', async () => {
   assert.ok(kinds.includes(14), 'a separator is emitted before the footer')
 })
 
+test('a click rewrites the approval card to a green or red decided state', async () => {
+  const { handleApprovalButton } = await import('../src/bridge/interactions/approval.js')
+  const { ApprovalRegistry } = await import('../src/bridge/approval.js')
+  const { APPROVE_BUTTON_PREFIX, REJECT_BUTTON_PREFIX } = await import('../src/discord/renderer.js')
+
+  const run = async (prefix, decision) => {
+    const edits = []
+    const approvals = new ApprovalRegistry({ timeoutMs: 60_000, logger: { warn() {} } })
+    const request = approvals.create({ channelId: 'c1' })
+    const runtime = {
+      approvals,
+      config: {},
+      audit: { record() {} },
+      logger: { warn() {} },
+      transport: {
+        deferButton: async () => {},
+        editComponentReply: async (_interaction, payload) => edits.push(payload),
+        replyEphemeral: async () => {},
+      },
+    }
+    const interaction = {
+      channelId: 'c1',
+      guildId: 'g1',
+      user: { id: 'u1' },
+      message: { id: 'm1' },
+      customId: `${prefix}${request.id}`,
+    }
+    const owned = await handleApprovalButton(runtime, interaction, interaction.customId, {
+      authorized: () => true,
+    })
+    assert.equal(owned, true)
+    assert.equal(await request.decided, decision)
+    assert.equal(edits.length, 1, 'the card is rewritten exactly once')
+    const texts = []
+    const walk = (nodes) => {
+      for (const node of nodes || []) {
+        if (node.type === 10) texts.push(node.content)
+        walk(node.components)
+      }
+    }
+    walk(edits[0].components)
+    return { payload: edits[0], text: texts.join('\n') }
+  }
+
+  const approved = await run(APPROVE_BUTTON_PREFIX, 'approved')
+  assert.match(approved.text, /已批准/)
+  assert.equal(approved.payload.components[0].accent_color, 0x57f287, 'approved bar is green')
+
+  const rejected = await run(REJECT_BUTTON_PREFIX, 'rejected')
+  assert.match(rejected.text, /已拒绝/)
+  assert.equal(rejected.payload.components[0].accent_color, 0xed4245, 'rejected bar is red')
+})
+
 test('DSH approval requests are answered from a Discord card', async () => {
   const { answerApprovalRequest, describeApproval, approvalOutcome } = await import(
     '../src/bridge/interactions/approval.js'

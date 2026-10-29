@@ -289,18 +289,23 @@ export class DiscordTransport {
    * IS_COMPONENTS_V2, and Discord rejects a payload that mixes the legacy
    * `content` field with that flag
    * (MESSAGE_CANNOT_USE_LEGACY_FIELDS_WITH_COMPONENTS_V2).
+   *
+   * A deferred component interaction (`deferUpdate`) is an acknowledgement of
+   * the card itself, so the confirmation must be a **follow-up**: `editReply`
+   * would overwrite the card the operator just acted on and wipe the state text
+   * the interaction was updating.
    */
   async replyEphemeral(interaction, text) {
+    const payload = normalizePayload(noticeCard(text))
+    const ephemeral = { ...payload, flags: (payload.flags ?? 0) | (1 << 6) }
     await this.withAudit(
       'discord',
       'button.reply',
       { channelId: interaction.channelId, userId: interaction.user?.id, customId: interaction.customId },
-      () => {
-        const payload = normalizePayload(noticeCard(text))
-        return interaction.deferred || interaction.replied
-          ? interaction.editReply(payload)
-          : interaction.reply({ ...payload, flags: payload.flags | (1 << 6) })
-      },
+      () =>
+        interaction.deferred || interaction.replied
+          ? interaction.followUp(ephemeral)
+          : interaction.reply(ephemeral),
     )
   }
 
