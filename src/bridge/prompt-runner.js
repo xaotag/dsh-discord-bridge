@@ -59,8 +59,18 @@ export async function runPrompt(
       if (indexed.startsWith(prefix)) threadIndex.delete(indexed)
     }
   }
-  const onSubagentThread = (childId, threadId) =>
+  const onSubagentThread = (childId, threadId, child = {}) => {
     threadIndex?.set(subagentThreadKey(key, childId), threadId)
+    // Durable: replies in that thread must reach this child even after a
+    // restart, and must never fall back to opening a new Session.
+    Promise.resolve(
+      runtime.state?.setThreadAgent?.(threadId, {
+        childId,
+        conversationKey: key,
+        ...(child?.label ? { label: child.label } : {}),
+      }),
+    ).catch(() => undefined)
+  }
 
   // Tell the main channel where the work went, reusing the placeholder if one
   // was already posted rather than leaving two messages behind.

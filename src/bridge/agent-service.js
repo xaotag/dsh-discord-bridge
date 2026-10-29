@@ -36,6 +36,9 @@ export class AgentService {
     this.activeSubagents = new Map()
     // Pending settleChildren() resolvers, so dispose() can unblock them.
     this.settleWaiters = new Set()
+    // childSessionId -> sink that owns the child's Discord thread. A child the
+    // operator is chatting with directly renders there, not on the parent card.
+    this.childSinks = new Map()
     this.disposeStream = ctx.on('agent/assistant-stream', (payload) => this.observeStream(payload))
     this.disposeSession = ctx.on('session/event', (session, event) => this.observeSession(session, event))
     this.disposeAgent = ctx.on('agent/disposed', (payload) => this.observeDisposed(payload))
@@ -76,6 +79,36 @@ export class AgentService {
   /** Children of one conversation that resolve to a depth above the root. */
   subagentCount(key) {
     return this.tree.childrenOf(key).filter((node) => (node.depth ?? 0) > 0).length
+  }
+
+  /** Live Agent for a delegated child Session, if it is still resident. */
+  childAgent(childSessionId) {
+    if (!childSessionId) return undefined
+    try {
+      return this.ctx.agents.get(childSessionId) ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Live root Agent for a conversation key, resuming it when needed. */
+  async ensureConversationAgent(key) {
+    if (this.disposed) return undefined
+    try {
+      return await this.ensureAgent(this.runtime(key))
+    } catch (error) {
+      this.logger.warn?.('恢复父会话失败:', error?.message || String(error))
+      return undefined
+    }
+  }
+
+  /** Route one child's activity to the Discord thread that owns it. */
+  bindChildSink(childSessionId, sink) {
+    if (childSessionId) this.childSinks.set(childSessionId, sink)
+  }
+
+  unbindChildSink(childSessionId) {
+    this.childSinks.delete(childSessionId)
   }
 
   runtime(key, meta = {}) {
@@ -713,9 +746,18 @@ export class AgentService {
   observeSubagentStream(agent, frame) {
     const entry = this.tree.resolve(agent)
     if (!entry || entry.depth === 0) return
+    if (frame.type !== 'chunk') return
+    const direct = this.childSinks.get(entry.sessionId)
+    if (direct) {
+      // The operator opened this child's thread, so its prose is that card's
+      // answer rather than a line on the parent's card.
+      if (frame.chunk?.type === 'text-delta') direct.onTextDelta?.(frame.chunk.text)
+      else if (frame.chunk?.type === 'reasoning-delta') direct.onReasoningDelta?.(frame.chunk.text)
+      return
+    }
     const runtime = this.runtimes.get(entry.key)
     if (!runtime?.sink) return
-    if (frame.type !== 'chunk' || frame.chunk?.type !== 'text-delta') return
+    if (frame.chunk?.type !== 'text-delta') return
     this.activeSubagents.set(entry.sessionId, entry.key)
     runtime.sink.onSubagentEvent?.({
       kind: 'text',
@@ -796,6 +838,16 @@ export class AgentService {
    */
   observeSubagentEvent(runtime, entry, event) {
     const child = { id: entry.sessionId, label: entry.label, depth: entry.depth }
+    const direct = this.childSinks.get(entry.sessionId)
+    if (direct && event.type === 'tool/call') {
+      this.activeSubagents.set(entry.sessionId, entry.key)
+      direct.onToolCall?.(event.data?.name, event.data?.arguments)
+      return
+    }
+    if (direct && event.type === 'tool/result') {
+      direct.onToolResult?.(event.data)
+      return
+    }
     if (event.type === 'tool/call') {
       this.activeSubagents.set(entry.sessionId, entry.key)
       runtime.sink?.onSubagentEvent?.({

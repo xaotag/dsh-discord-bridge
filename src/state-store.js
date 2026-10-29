@@ -7,7 +7,7 @@ export class StateStore {
   constructor(filename, maxSeen = 2048) {
     this.filename = filename
     this.maxSeen = maxSeen
-    this.state = { version: 1, conversations: {}, seenEventIds: [] }
+    this.state = { version: 1, conversations: {}, subagentThreads: {}, seenEventIds: [] }
     this.writes = Promise.resolve()
     this.closed = false
   }
@@ -21,13 +21,14 @@ export class StateStore {
       this.state = {
         version: 1,
         conversations: parsed.conversations || {},
+        subagentThreads: parsed.subagentThreads || {},
         seenEventIds: Array.isArray(parsed.seenEventIds) ? parsed.seenEventIds.slice(-this.maxSeen) : [],
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         // Corrupt state is retained on disk for recovery, but the bridge starts
         // with an empty in-memory view rather than preventing DSH from booting.
-        this.state = { version: 1, conversations: {}, seenEventIds: [] }
+        this.state = { version: 1, conversations: {}, subagentThreads: {}, seenEventIds: [] }
       }
     }
   }
@@ -71,6 +72,39 @@ export class StateStore {
     }
     current.updatedAt = Date.now()
     this.state.conversations[key] = current
+    await this.persist()
+  }
+
+  /**
+   * Durable binding of one Discord thread to a delegated child Session.
+   *
+   * A subagent thread is the child's own conversation surface: replying there
+   * continues that child, it never starts a Session of its own. The binding has
+   * to outlive a restart, because the child (and its thread) can still be
+   * resumed long after the turn that created them.
+   */
+  threadAgent(threadId) {
+    return this.state.subagentThreads?.[threadId]
+  }
+
+  /** Thread currently bound to a child Session, if any. */
+  threadForChild(childSessionId) {
+    for (const [threadId, binding] of Object.entries(this.state.subagentThreads || {})) {
+      if (binding?.childId === childSessionId) return threadId
+    }
+    return undefined
+  }
+
+  async setThreadAgent(threadId, binding) {
+    if (!threadId || !binding?.childId) return
+    if (!this.state.subagentThreads) this.state.subagentThreads = {}
+    this.state.subagentThreads[threadId] = { ...binding, updatedAt: Date.now() }
+    await this.persist()
+  }
+
+  async forgetThreadAgent(threadId) {
+    if (!this.state.subagentThreads?.[threadId]) return
+    delete this.state.subagentThreads[threadId]
     await this.persist()
   }
 
