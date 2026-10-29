@@ -14,6 +14,7 @@ import { noticeCard, placeholderCard } from '../discord/cards-v2.js'
 import { conversationKeyFor, greeting, MENTION_FOLLOWUP_WINDOW_MS, safeError } from './runtime.js'
 import { handleCommand } from './commands/index.js'
 import { runPrompt } from './prompt-runner.js'
+import { runChildPrompt } from './child-prompt.js'
 
 export async function handleMessage(runtime, message) {
   const { config, state, audit, transport, logger, pendingMentions } = runtime
@@ -47,13 +48,16 @@ export async function handleMessage(runtime, message) {
 
   const mention = mentionsUser(message.mentions, clientUser.id)
   const bound = state.hasSession(key)
+  // A subagent thread is the child's own conversation: its messages belong to
+  // that child, not to the parent channel and not to a new Session.
+  const childBinding = kind === 'thread' ? state.threadAgent(channelId) : undefined
   const awaiting = pendingMentions.get(key)
   const inMentionTurn =
     awaiting !== undefined &&
     awaiting.userId === message.author.id &&
     Date.now() - awaiting.at < MENTION_FOLLOWUP_WINDOW_MS
   if (kind === 'channel' && config.requireMention && !mention && !inMentionTurn) return
-  if (kind === 'thread' && config.requireMention && !mention && !bound && !inMentionTurn) return
+  if (kind === 'thread' && config.requireMention && !mention && !bound && !childBinding && !inMentionTurn) return
 
   const text = stripMentions(message.content, clientUser.id)
   const attachments = [...(message.attachments?.values?.() || [])]
@@ -99,6 +103,21 @@ export async function handleMessage(runtime, message) {
           store: runtime.ctx.get('attachments'),
         })
       }
+    }
+    if (childBinding) {
+      await transport
+        .send(channelId, placeholderCard(), { replyToMessageId: message.id })
+        .catch(() => undefined)
+      await runChildPrompt(runtime, {
+        childId: childBinding.childId,
+        conversationKey: childBinding.conversationKey || key,
+        channelId,
+        prompt,
+        replyToMessageId: message.id,
+        images,
+        label: childBinding.label,
+      })
+      return
     }
     const deepseekCommand = parseDeepSeekTextCommand(prompt)
     if (deepseekCommand) {

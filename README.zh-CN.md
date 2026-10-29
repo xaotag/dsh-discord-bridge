@@ -312,6 +312,19 @@ DSH 里的 `subagent`、`subagent_fork`、Team 成员都是**独立的 Session**
 
 实现见 [`docs/subagent-sessions.md`](docs/subagent-sessions.md)。
 
+## 子代理线程 = 子代理会话
+
+`DSH_DISCORD_SUBAGENT_THREADS`（默认开启）会给每个子代理开一个 Thread。这个 Thread
+**绑定的是子代理自己派发的那个 Agent**，不是一条新的 Session：
+
+- 在子代理 Thread 里说话 = 继续跟那个子代理对话，走它自己的 Session；
+- 子代理还驻留时直接投递到它的 inbox；已经休眠时由 DSH 的 subagent 服务冷恢复它，
+  再投递同一条消息（不会重复发送）；
+- 线程 ↔ 子代理的绑定持久化在 `state.json` 的 `subagentThreads` 里，重启后仍然有效；
+- 子代理已经终止且无法恢复时，只回一张说明卡片，**不会**因此新建 Session，也不会
+  把消息偷偷转给主 Agent；
+- 主频道那张卡片仍然只显示子代理的活动摘要；子代理的正文只出现在它自己的线程里。
+
 ## 上下文与安全
 
 - 默认 `isolation: channel`：按 Channel ID / Thread ID 隔离并持久化 DSH Session。

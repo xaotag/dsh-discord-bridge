@@ -189,8 +189,8 @@ export class StreamReporter {
       parentChannelId: this.channelId,
       logger: this.logger,
       onThread: (childId, threadId) => {
-        this.onSubagentThread?.(childId, threadId)
         const entry = this.subagents.get(childId)
+        this.onSubagentThread?.(childId, threadId, { label: entry?.label })
         if (!entry) return
         entry.threadId = threadId
         // The parent block now has a link to show.

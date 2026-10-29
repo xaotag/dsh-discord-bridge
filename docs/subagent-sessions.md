@@ -116,6 +116,18 @@ sink.onSubagentEvent({
 实现：`src/bridge/subagent-threads.js`（`SubagentThreads`），由 `StreamReporter.onSubagentEvent`
 驱动；不 import DSH，不改父答案正文。
 
+## 子代理线程与子代理会话
+
+每个子代理的 Discord 子线程绑定它**自己的** Agent（`state.subagentThreads` 持久化
+`threadId -> { childId, conversationKey, label }`）：
+
+- 线程里的消息走 `runChildPrompt`：子代理驻留时 `followup()`；休眠时
+  `ctx.subagents.prompt({ mode: 'continuable', delivery: 'queue' })` 冷恢复后等待回合结束；
+- 冷恢复的那次调用本身携带消息，因此不再额外 `followup()`，否则子代理会答两遍；
+- 子代理不可恢复时只回说明卡片，不新建 Session、不转发给父 Agent；
+- 子代理的流式正文与工具行通过 `agents.bindChildSink(childId, reporter)` 投到它自己的线程，
+  父卡片只保留摘要。
+
 ## 兼容与回退
 
 - 根 Agent 行为零变化：解析深度 0，走原路径。
