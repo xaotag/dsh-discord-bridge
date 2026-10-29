@@ -1,3 +1,4 @@
+import { IS_COMPONENTS_V2 } from './components-v2.js'
 import { adaptMarkdownForEmbed } from './markdown.js'
 
 export const DISCORD_CONTENT_LIMIT = 2000
@@ -525,29 +526,42 @@ export function normalizePayload(payload) {
     ...source,
     allowedMentions: { parse: [], repliedUser: false, ...(source.allowedMentions || {}) },
   }
+  // A V2 message can only carry components: content, embeds, stickers, poll and
+  // shared_client_theme are rejected outright by the API when the flag is set.
+  const isV2 = Boolean(Number(source.flags) & IS_COMPONENTS_V2)
+  if (isV2) {
+    delete result.content
+    delete result.embeds
+    delete result.sticker_ids
+    delete result.poll
+    delete result.shared_client_theme
+  }
   // Discord keeps an edited message's components unless the edit sends an
   // explicit empty array, so a card without buttons must always say so.
   if (!('components' in source)) result.components = []
-  if (Array.isArray(source.embeds) && source.embeds.length === 0) delete result.embeds
-  if (Array.isArray(source.embeds) && source.embeds.length > 0) {
-    const embeds = []
-    let total = 0
-    for (const embed of source.embeds.slice(0, 10)) {
-      const size = (embed?.title?.length || 0) + (embed?.description?.length || 0) + (embed?.footer?.text?.length || 0)
-      if (total + size > EMBED_TOTAL_LIMIT) break
-      total += size
-      embeds.push(embed)
+  if (!isV2) {
+    if (Array.isArray(source.embeds) && source.embeds.length === 0) delete result.embeds
+    if (Array.isArray(source.embeds) && source.embeds.length > 0) {
+      const embeds = []
+      let total = 0
+      for (const embed of source.embeds.slice(0, 10)) {
+        const size =
+          (embed?.title?.length || 0) + (embed?.description?.length || 0) + (embed?.footer?.text?.length || 0)
+        if (total + size > EMBED_TOTAL_LIMIT) break
+        total += size
+        embeds.push(embed)
+      }
+      if (embeds.length > 0) {
+        result.embeds = embeds
+      } else {
+        delete result.embeds
+      }
     }
-    if (embeds.length > 0) {
-      result.embeds = embeds
-    } else {
-      delete result.embeds
+    if (source.content !== undefined) {
+      const content = boundedText(source.content)
+      if (content) result.content = content
+      else delete result.content
     }
-  }
-  if (source.content !== undefined) {
-    const content = boundedText(source.content)
-    if (content) result.content = content
-    else delete result.content
   }
   return result
 }

@@ -804,6 +804,129 @@ test('component budget is enforced before sending', async () => {
   assert.throws(() => assertComponentBudget(huge), /limit is 40/)
 })
 
+test('component builders enforce the documented fields and limits', async () => {
+  const {
+    BUTTON_STYLE,
+    COMPONENT_TYPE,
+    LIMITS,
+    TEXT_INPUT_STYLE,
+    actionRow,
+    button,
+    container,
+    label,
+    modal,
+    separator,
+    stringSelect,
+    textDisplay,
+    textInput,
+  } = await import('../src/discord/components-v2.js')
+
+  // Button: 80-char label, 1-100 custom_id, link style swaps custom_id for url.
+  const btn = button({ customId: 'b'.repeat(100), label: 'x'.repeat(120) })
+  assert.equal(btn.label.length, LIMITS.BUTTON_LABEL)
+  assert.equal(btn.custom_id.length, LIMITS.CUSTOM_ID)
+  assert.throws(() => button({ customId: 'b', style: BUTTON_STYLE.LINK }), /requires a url/)
+  const link = button({ style: BUTTON_STYLE.LINK, url: 'https://example.com', label: 'site' })
+  assert.equal(link.custom_id, undefined, 'link buttons must not carry a custom_id')
+  assert.equal(link.url, 'https://example.com')
+  assert.throws(() => button({ label: 'no id' }), /custom_id is required/)
+  assert.throws(() => button({ customId: 'x'.repeat(101) }), /exceeds 100/)
+
+  // Text Display: content capped at 4000. Separator: spacing is 1 or 2.
+  assert.equal(textDisplay('x'.repeat(5000)).content.length, LIMITS.TEXT_DISPLAY)
+  assert.equal(separator({ spacing: 9 }).spacing, 1)
+  assert.equal(separator({ spacing: 2 }).spacing, 2)
+
+  // Action Row: at most 5 buttons, or exactly one select component.
+  const five = Array.from({ length: 5 }, (_, i) => button({ customId: `b${i}` }))
+  assert.equal(actionRow(five).components.length, 5)
+  assert.throws(() => actionRow([...five, button({ customId: 'b6' })]), /at most 5 buttons/)
+  const select = stringSelect({ customId: 's', options: [{ label: 'a' }] })
+  assert.throws(() => actionRow([select, ...five]), /exactly one component/)
+  assert.throws(
+    () => actionRow([select, stringSelect({ customId: 's2', options: [{ label: 'b' }] })]),
+    /exactly one component/,
+  )
+  assert.throws(() => actionRow([]), /at least one/)
+
+  // String Select: 25 options, 100-char label/value/description, 150-char placeholder.
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    label: 'l'.repeat(120),
+    value: String(i),
+    description: 'd'.repeat(120),
+  }))
+  const sel = stringSelect({
+    customId: 's',
+    options: many,
+    placeholder: 'p'.repeat(200),
+    multi: true,
+    maxValues: 99,
+  })
+  assert.equal(sel.options.length, LIMITS.SELECT_OPTIONS)
+  assert.equal(sel.options[0].label.length, LIMITS.SELECT_LABEL)
+  assert.equal(sel.options[0].description.length, LIMITS.SELECT_DESCRIPTION)
+  assert.equal(sel.placeholder.length, LIMITS.SELECT_PLACEHOLDER)
+  assert.equal(sel.min_values, 1)
+  assert.equal(sel.max_values, LIMITS.SELECT_OPTIONS)
+  assert.throws(() => stringSelect({ customId: 's', options: [] }), /at least one option/)
+
+  // Text Input: min <= max <= 4000, 100-char placeholder, 4000-char value.
+  const input = textInput({
+    customId: 'i',
+    style: TEXT_INPUT_STYLE.PARAGRAPH,
+    minLength: 9000,
+    maxLength: 9000,
+    placeholder: 'p'.repeat(120),
+    value: 'v'.repeat(5000),
+  })
+  assert.equal(input.max_length, LIMITS.TEXT_INPUT_MAX_LENGTH)
+  assert.equal(input.min_length, LIMITS.TEXT_INPUT_MAX_LENGTH)
+  assert.equal(input.placeholder.length, LIMITS.TEXT_INPUT_PLACEHOLDER)
+  assert.equal(input.value.length, LIMITS.TEXT_INPUT_VALUE)
+  assert.throws(() => textInput({ customId: 'i', style: 3 }), /unsupported text input style/)
+
+  // Label: 45-char label, 100-char description, documented child types only.
+  const lbl = label({ text: 't'.repeat(60), description: 'd'.repeat(120), component: input })
+  assert.equal(lbl.label.length, LIMITS.LABEL)
+  assert.equal(lbl.description.length, LIMITS.LABEL_DESCRIPTION)
+  assert.throws(() => label({ text: 'x', component: { type: COMPONENT_TYPE.TEXT_DISPLAY } }), /cannot be wrapped/)
+
+  // Modal: 45-char title, 5 components max.
+  const tooMany = Array.from({ length: LIMITS.MODAL_COMPONENTS + 1 }, () => lbl)
+  assert.throws(() => modal({ customId: 'm', title: 'x', components: tooMany }), /at most 5 components/)
+  const m = modal({ customId: 'm', title: 't'.repeat(60), components: [lbl] })
+  assert.equal(m.title.length, LIMITS.MODAL_TITLE)
+  assert.throws(() => modal({ customId: 'm', title: 'x', components: [] }), /at least one/)
+
+  // Container: documented children only, accent color clamped to RGB.
+  const c = container([textDisplay('x'), separator()], { accentColor: 0x1ffffff })
+  assert.equal(c.accent_color, 0xffffff)
+  assert.throws(
+    () => container([{ type: COMPONENT_TYPE.BUTTON, style: 2, custom_id: 'b' }], {}),
+    /not a valid container child/,
+  )
+})
+
+test('message-level limits are enforced: 4000 text characters across components', async () => {
+  const { v2Payload, textDisplay } = await import('../src/discord/components-v2.js')
+  const { assertComponentBudget } = await import('../src/discord/cards-v2.js')
+  const payload = v2Payload([textDisplay('x'.repeat(4000)), textDisplay('y')])
+  assert.throws(() => assertComponentBudget(payload), /displayable characters/)
+})
+
+test('a V2 payload never carries legacy content or embeds', async () => {
+  const { normalizePayload } = await import('../src/discord/renderer.js')
+  const { v2Payload, textDisplay } = await import('../src/discord/components-v2.js')
+  const payload = normalizePayload({
+    ...v2Payload([textDisplay('hi')]),
+    content: 'legacy',
+    embeds: [{ title: 'legacy' }],
+  })
+  assert.equal(payload.flags, 1 << 15)
+  assert.equal(payload.content, undefined)
+  assert.equal(payload.embeds, undefined)
+})
+
 test('long bodies split across text displays without breaking surrogates', async () => {
   const { textChunks, TEXT_DISPLAY_LIMIT } = await import('../src/discord/components-v2.js')
   const body = 'x'.repeat(TEXT_DISPLAY_LIMIT + 500)

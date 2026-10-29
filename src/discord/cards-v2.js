@@ -15,9 +15,9 @@ import {
   TEXT_DISPLAY_LIMIT,
   TEXT_INPUT_STYLE,
   actionRow,
+  assertComponentBudget,
   button,
   container,
-  countComponents,
   label,
   modal,
   separator,
@@ -60,19 +60,11 @@ export function cardPayload({
   emptyText = '（无内容）',
 } = {}) {
   const children = []
-  // Discord caps the *total* displayable text in a container at 4000 characters,
-  // not each Text Display. Budget the title and footer first, then give the body
-  // whatever is left, or a long answer plus its chrome is rejected outright
-  // (COMPONENT_DISPLAYABLE_TEXT_SIZE_EXCEEDED).
-  let budget = CONTAINER_TEXT_LIMIT
-  /** Reserve `prefix`+text against the budget; the prefix counts too. */
-  const take = (text, prefix = '') => {
-    const room = budget - prefix.length
-    if (room <= 0) return ''
-    const clipped = text.length <= room ? text : `${text.slice(0, Math.max(0, room - 1))}…`
-    budget -= prefix.length + clipped.length
-    return clipped
-  }
+  // Discord caps the *combined* displayable text in a message at 4000
+  // characters, not each Text Display. Budget the title and footer first, then
+  // give the body whatever is left, or a long answer plus its chrome is rejected
+  // outright (COMPONENT_DISPLAYABLE_TEXT_SIZE_EXCEEDED).
+  const take = textBudget()
 
   const headingPrefix = `${'#'.repeat(clampHeading(headingLevel))} `
   const cleanTitle = take(suppressMentions(String(title ?? '')).trim(), headingPrefix)
@@ -85,8 +77,9 @@ export function cardPayload({
   // headings and nesting are left exactly as the model wrote them.
   const adaptedBody = adaptMarkdownForTextDisplay(String(body ?? ''))
   const cleanBody = take(suppressMentions(adaptedBody).trim())
-  for (const chunk of textChunks(cleanBody || emptyText)) {
-    children.push(textDisplay(chunk))
+  const bodyText = cleanBody || take(emptyText)
+  for (const chunk of textChunks(bodyText)) {
+    if (chunk) children.push(textDisplay(chunk))
   }
   if (cleanFooter) {
     children.push(separator({ spacing: 1 }))
@@ -94,7 +87,35 @@ export function cardPayload({
     children.push(textDisplay(`${FOOTER_PREFIX}${cleanFooter}`))
   }
   for (const row of rows) if (row) children.push(row)
-  return v2Payload([container(children, { accentColor })])
+  // A container must have at least one child; a fully empty card still needs a
+  // visible body so the message does not come back as an invalid payload.
+  if (children.length === 0) children.push(textDisplay(emptyText))
+  return assertComponentBudget(v2Payload([container(children, { accentColor })]))
+}
+
+/**
+ * A single mutable text budget for one message.
+ *
+ * The 4000-character limit is message-wide: title, body and footer all spend
+ * from the same pool. Callers that build children by hand (the question card)
+ * use this too, so no path can exceed the limit.
+ */
+function textBudget(total = CONTAINER_TEXT_LIMIT) {
+  let remaining = total
+  return (text, prefix = '') => {
+    const room = remaining - prefix.length
+    if (room <= 0) return ''
+    const source = String(text ?? '')
+    let clipped = source
+    if (source.length > room) {
+      let cut = source.slice(0, Math.max(0, room - 1))
+      // Do not split a surrogate pair when the ellipsis lands on it.
+      if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1)
+      clipped = `${cut}…`
+    }
+    remaining -= prefix.length + clipped.length
+    return clipped
+  }
 }
 
 /**
@@ -350,16 +371,26 @@ export function questionCard({
   const q = question ?? {}
   const options = Array.isArray(q.options) ? q.options : []
   const children = []
+  // One message-wide budget, same as cardPayload: the header, body and countdown
+  // all spend from the documented 4000-character pool.
+  const take = textBudget()
 
-  const heading = q.header ? `${q.header}` : '❓ 需要你的选择'
-  children.push(textDisplay(`## ${heading}`))
+  const rawHeading = q.header ? String(q.header) : '❓ 需要你的选择'
+  const heading = take(suppressMentions(rawHeading).replace(/\s+/g, ' ').trim(), '## ')
+  if (heading) children.push(textDisplay(`## ${heading}`))
 
-  const body = []
-  if (q.question) body.push(q.question)
-  if (q.detail) body.push(q.detail)
-  const position = total > 1 ? `-# 第 ${index + 1}/${total} 个问题` : undefined
-  if (position) body.push(position)
-  children.push(textDisplay(body.join('\n\n') || '（无内容）'))
+  let bodyText = ''
+  for (const part of [q.question, q.detail]) {
+    if (!part) continue
+    const text = take(suppressMentions(String(part)).trim(), bodyText ? '\n\n' : '')
+    if (text) bodyText += `${bodyText ? '\n\n' : ''}${text}`
+  }
+  if (total > 1 && Number.isInteger(index) && index >= 0) {
+    const position = take(`-# 第 ${index + 1}/${total} 个问题`, bodyText ? '\n\n' : '')
+    if (position) bodyText += `${bodyText ? '\n\n' : ''}${position}`
+  }
+  if (bodyText) children.push(textDisplay(bodyText))
+  else if (children.length === 0) children.push(textDisplay(take('（无内容）') || '（无内容）'))
 
   if (options.length) {
     children.push(
@@ -403,11 +434,14 @@ export function questionCard({
     if (left > 0) bits.push(formatCountdown(expiresAt, left))
   }
   if (bits.length) {
-    children.push(separator({ spacing: 1 }))
-    children.push(textDisplay(`-# ${bits.join(' · ')}`))
+    const footer = take(bits.join(' · '), FOOTER_PREFIX)
+    if (footer) {
+      children.push(separator({ spacing: 1 }))
+      children.push(textDisplay(`${FOOTER_PREFIX}${footer}`))
+    }
   }
 
-  return v2Payload([container(children, { accentColor: ACCENT.notice })])
+  return assertComponentBudget(v2Payload([container(children, { accentColor: ACCENT.notice })]))
 }
 
 /** The same card once answered, with the controls removed. */
@@ -464,7 +498,8 @@ export function questionCustomModal({
 
 /** Confirmation card with approve / reject buttons. */
 export function approvalCard({
-  requestId,  title = '⚠️ 需要确认',
+  requestId,
+  title = '⚠️ 需要确认',
   description,
   footer,
   expiresAt,
@@ -521,7 +556,10 @@ export function withStopRow(payload, messageId, { prefix, label = '停止' } = {
   const row = actionRow([
     button({ customId: `${prefix}${messageId}`, label, style: 4, emoji: { name: '⏹️' } }),
   ])
-  return { ...payload, components: [{ ...root, components: [...root.components, row] }] }
+  return assertComponentBudget({
+    ...payload,
+    components: [{ ...root, components: [...root.components, row] }],
+  })
 }
 
 function footerBits({ startedAt, model, reasoningEffort, caption } = {}) {
@@ -544,16 +582,4 @@ function formatElapsed(ms) {
   return `${minutes}m${Math.round(seconds % 60)}s`
 }
 
-/**
- * Guard against the 40-component ceiling before sending, rather than letting
- * the API reject the whole message.
- */
-export function assertComponentBudget(payload) {
-  const total = countComponents(payload?.components)
-  if (total > MAX_TOTAL_COMPONENTS) {
-    throw new Error(`Components V2 payload has ${total} components, limit is ${MAX_TOTAL_COMPONENTS}`)
-  }
-  return payload
-}
-
-export { TEXT_DISPLAY_LIMIT, MAX_TOTAL_COMPONENTS }
+export { assertComponentBudget, TEXT_DISPLAY_LIMIT, MAX_TOTAL_COMPONENTS }
