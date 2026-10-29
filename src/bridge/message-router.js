@@ -7,7 +7,7 @@
  */
 import { authorized } from '../config.js'
 import { mentionsUser, stripMentions } from '../discord/mention.js'
-import { readTextAttachments } from '../discord/attachments.js'
+import { readImageAttachments, readTextAttachments, splitAttachments } from '../discord/attachments.js'
 import { parseTextCommand } from '../discord/commands.js'
 import { parseDeepSeekTextCommand } from '../discord/deepseek-commands.js'
 import { noticeCard, placeholderCard } from '../discord/cards-v2.js'
@@ -80,9 +80,22 @@ export async function handleMessage(runtime, message) {
 
   try {
     let prompt = text
+    let images = []
     if (attachments.length) {
-      const attachmentText = await readTextAttachments(attachments)
-      prompt = prompt ? `${prompt}\n\n${attachmentText}` : attachmentText
+      const split = splitAttachments(attachments)
+      if (split.unsupported.length) {
+        const name = split.unsupported[0]?.name || 'attachment'
+        throw new Error(`暂不支持该附件：${name}（支持文本/代码文件与 png/jpeg/webp/gif 图片）`)
+      }
+      if (split.text.length) {
+        const attachmentText = await readTextAttachments(split.text)
+        prompt = prompt ? `${prompt}\n\n${attachmentText}` : attachmentText
+      }
+      if (split.images.length) {
+        images = await readImageAttachments(split.images, {
+          store: runtime.ctx.get('attachments'),
+        })
+      }
     }
     const deepseekCommand = parseDeepSeekTextCommand(prompt)
     if (deepseekCommand) {
@@ -118,6 +131,7 @@ export async function handleMessage(runtime, message) {
       placeholder,
       replyToMessageId: message.id,
       attachmentCount: attachments.length,
+      images,
       boundChannelId: kind === 'thread' ? channelId : undefined,
     })
   } catch (error) {

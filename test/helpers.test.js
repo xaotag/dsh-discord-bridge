@@ -565,6 +565,65 @@ test('malformed arguments degrade to the bare tool name', async () => {
   assert.equal(embed.description, '✓ `bash`')
 })
 
+test('attachments split into text, images and refusals', async () => {
+  const { imageMediaType, splitAttachments } = await import('../src/discord/attachments.js')
+  const split = splitAttachments([
+    { name: 'shot.png', contentType: 'image/png', size: 4, url: 'https://cdn/a' },
+    { name: 'notes.md', contentType: 'text/markdown', size: 3, url: 'https://cdn/b' },
+    { name: 'blob.bin', contentType: 'application/octet-stream', size: 5, url: 'https://cdn/c' },
+  ])
+  assert.equal(split.images.length, 1, 'png goes to the image path')
+  assert.equal(split.text.length, 1, 'markdown stays a text attachment')
+  assert.equal(split.unsupported.length, 1, 'a binary blob is refused')
+  assert.equal(imageMediaType({ name: 'photo.JPG' }), 'image/jpeg', 'extension fallback')
+  assert.equal(imageMediaType({ name: 'a.txt' }), undefined)
+})
+
+test('image attachments are downloaded and stored as durable references', async () => {
+  const { readImageAttachments } = await import('../src/discord/attachments.js')
+  const saved = []
+  const store = {
+    saveImage: async (input) => {
+      saved.push(input)
+      return {
+        attachmentId: 'att-1',
+        mediaType: input.mediaType,
+        bytes: input.data.byteLength,
+        width: 2,
+        height: 2,
+      }
+    },
+  }
+  const fetchImpl = async () => ({
+    ok: true,
+    arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+  })
+  const refs = await readImageAttachments(
+    [{ name: 'shot.png', contentType: 'image/png', size: 4, url: 'https://cdn/a' }],
+    { store, fetchImpl },
+  )
+  assert.equal(refs.length, 1)
+  assert.equal(refs[0].attachmentId, 'att-1')
+  assert.equal(saved[0].mediaType, 'image/png')
+  assert.equal(saved[0].name, 'shot.png')
+  assert.equal(saved[0].data.byteLength, 4)
+
+  await assert.rejects(
+    () => readImageAttachments([{ name: 'a.png', size: 1 }], { store: undefined }),
+    /附件服务/,
+  )
+})
+
+test('a user message carries image blocks after the text block', async () => {
+  const { makeUserMessage } = await import('../src/bridge/agent-service.js')
+  const image = { attachmentId: 'att-1', mediaType: 'image/png', bytes: 4, width: 2, height: 2 }
+  const message = makeUserMessage('看这张图', { images: [image] })
+  assert.equal(message.content[0].type, 'text')
+  assert.deepEqual(message.content[1], { type: 'image', attachment: image })
+  assert.equal(makeUserMessage('', { images: [image] }).content[0].type, 'image')
+  assert.equal(makeUserMessage('', {}).content.length, 1, 'an empty message still has one text part')
+})
+
 test('approval registry resolves once and reports duplicates as settled', async () => {
   const { ApprovalRegistry } = await import('../src/bridge/approval.js')
   const registry = new ApprovalRegistry({ timeoutMs: 5000, logger: { warn() {} } })
