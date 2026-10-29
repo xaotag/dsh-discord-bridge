@@ -421,7 +421,7 @@ export class AgentService {
     }
   }
 
-  async run(key, meta, text, sink, { greeting = false } = {}) {
+  async run(key, meta, text, sink, { greeting = false, images = [] } = {}) {
     if (this.disposed) throw new Error('Discord bridge 正在关闭')
     const runtime = await this.touch(key, meta)
     runtime.pendingDeliveries += 1
@@ -443,7 +443,7 @@ export class AgentService {
         detail: { greeting, promptLength: text.length },
       })
       try {
-        agent.followup(makeUserMessage(greeting ? greetingPrompt(text) : text))
+        agent.followup(makeUserMessage(greeting ? greetingPrompt(text) : text, { images }))
         await agent.whenIdle()
         try {
           await this.ctx.get('sessions')?.flush?.(agent.session)
@@ -815,11 +815,22 @@ export class AgentService {
   }
 }
 
-function makeUserMessage(text) {
+/**
+ * Build a user message, with images appended as `image` content blocks.
+ *
+ * A message with nothing but images still carries an empty text part, because
+ * every provider path expects at least one block.
+ */
+export function makeUserMessage(text, { images = [] } = {}) {
+  const content = []
+  const body = String(text ?? '')
+  if (body) content.push({ type: 'text', text: body })
+  for (const image of images) content.push({ type: 'image', attachment: image })
+  if (content.length === 0) content.push({ type: 'text', text: '' })
   return {
     id: randomUUID(),
     role: 'user',
-    content: [{ type: 'text', text }],
+    content,
     source: { kind: 'user' },
   }
 }

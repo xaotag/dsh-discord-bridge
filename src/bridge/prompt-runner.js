@@ -26,6 +26,7 @@ export async function runPrompt(
     placeholder,
     replyToMessageId,
     attachmentCount = 0,
+    images = [],
     boundChannelId,
     greeting: isGreeting = false,
   },
@@ -86,7 +87,7 @@ export async function runPrompt(
   const key = boundChannelId || targetChannelId
   const meta = { channelId: key, guildId, kind }
   try {
-    const result = await agents.run(key, meta, prompt, reporter, { greeting: isGreeting })
+    const result = await agents.run(key, meta, prompt, reporter, { greeting: isGreeting, images })
     await reporter.finish(result.text, result.status, result.usage)
     return { ...result, threadId: thread?.channelId, channelId: targetChannelId }
   } catch (error) {
