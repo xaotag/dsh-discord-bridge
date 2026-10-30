@@ -206,7 +206,11 @@ export class DiscordTransport {
    * works, so a failed edit degrades into one instead of vanishing.
    */
   async editInteraction(interaction, text, { accentColor } = {}) {
-    const payload = normalizePayload(noticeCard(text, { accentColor }))
+    // An empty body means "acknowledge and say nothing": Discord rejects a
+    // payload with no content at all, so this becomes its own silent card.
+    const payload = text
+      ? normalizePayload(noticeCard(text, { accentColor }))
+      : normalizePayload(noticeCard('　'))
     try {
       await this.withAudit(
         'discord',
