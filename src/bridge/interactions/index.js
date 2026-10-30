@@ -227,12 +227,12 @@ export function createInteractionHandler(runtime) {
         userId: interaction.user?.id,
         detail: { group: normalized?.group, command: normalized?.command },
       })
-      if (!normalized) {
-        await transport.editInteraction(interaction, '未知的 /dsh 子命令。')
-        return
-      }
-      if (!normalized.command) {
-        await transport.editInteraction(interaction, '缺少子命令，请使用 `/dsh system help` 查看用法。')
+      // An unparseable or incomplete `/dsh` call is answered by silence: the
+      // command tree Discord renders already lists only real subcommands, so
+      // this is a stale client or a typo, and a card for it is just noise.
+      if (!normalized?.command) {
+        logger.log?.(`忽略无法解析的 /dsh 调用: ${describeInteraction(interaction)}`)
+        await transport.editInteraction(interaction, '').catch(() => undefined)
         return
       }
       await handleCommand(runtime, {
@@ -245,20 +245,26 @@ export function createInteractionHandler(runtime) {
         replyToMessageId: undefined,
       })
     } catch (error) {
-      logger.warn('Slash command 失败:', error?.stack || error?.message || String(error))
+      const message = error?.message || String(error)
+      // Unknown subcommands are typos or a stale command tree, not failures
+      // worth a visible error card; everything else still reports.
+      const unknown = /未知命令/.test(message)
+      logger.log?.(`Slash command 未处理: ${message}`)
       audit.record({
         category: 'discord',
         action: 'slash.command',
-        status: 'error',
+        status: unknown ? 'ignored' : 'error',
         channelId,
         guildId,
         conversation: channelId,
         userId: interaction.user?.id,
-        error: error?.message || String(error),
+        error: message,
       })
-      await transport
-        .editInteraction(interaction, `❌ 命令执行失败：${safeError(error)}`)
-        .catch(() => undefined)
+      if (!unknown) {
+        await transport
+          .editInteraction(interaction, `❌ 命令执行失败：${safeError(error)}`)
+          .catch(() => undefined)
+      }
     }
   }
 }

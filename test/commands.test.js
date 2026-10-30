@@ -205,3 +205,34 @@ test('the slash tree and help text agree on the command surface', async () => {
   assert.ok(!subs.includes('system confirm'), 'system confirm is gone from the slash tree')
   assert.match(HELP_TEXT, /`sudo <命令>`/)
 })
+
+test('an unknown subcommand is recorded but not shown to the operator', async () => {
+  const { handleCommand } = await import('../src/bridge/commands/index.js')
+  const runtime = fakeRuntime()
+  await assert.rejects(
+    () => handleCommand(runtime, { ...base, group: 'nope', command: 'nope' }),
+    /未知命令/,
+  )
+  assert.equal(runtime.replies.length, 0)
+})
+
+test('a silent acknowledgement still produces a valid payload', async () => {
+  const { DiscordTransport } = await import('../src/discord/transport.js')
+  const edits = []
+  const transport = Object.assign(Object.create(DiscordTransport.prototype), {
+    audit: { record() {} },
+    limiter: { run: (fn) => fn() },
+    withAudit: (_c, _a, _m, op) => op(),
+    send: async () => ({ messageId: 'm' }),
+  })
+  const interaction = {
+    channelId: 'c1',
+    guildId: 'g1',
+    user: { id: 'u1' },
+    editReply: async (payload) => edits.push(payload),
+  }
+  await transport.editInteraction(interaction, '')
+  assert.equal(edits.length, 1)
+  const displays = JSON.parse(JSON.stringify(edits[0]))
+  assert.ok(displays.components?.length > 0, 'Discord rejects an empty component tree')
+})
