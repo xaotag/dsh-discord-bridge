@@ -394,6 +394,25 @@ Discord 的交互 token 是一次性的：`editReply` 一旦失败（本机出�
 命令本身在 `interaction.defer` 之后执行，所以即使回复失败，**状态变更已经生效**——
 比如 `/dsh permission set` 失败只影响回执，权限已经切了。
 
+## DSH 0.2.2 及以上：模型切换走 agent.model.select
+
+从 DSH 0.2.2 开始，**请求路由在 step 准备阶段就被固定**：`agent/request` 监听器如果提出不同的
+`provider/model/reasoningEffort`，agent loop 会直接抛错：
+
+```text
+agent/request proposed "p/m" after step preparation fixed "p/m2"; use agent.model.select()
+```
+
+所以桥接的 `/dsh model set` 与 `/dsh model reasoning` 改成调用 `agent.model.select()`，把下一次
+step 的路由记进 `model/selection` 事件；`system-prompt/assemble` 里的 provider/model 变量仍保留，
+但那只是给提示词看的展示信息，不参与路由。
+
+| 项 | 0.2.1 及更早 | 0.2.2+ |
+|---|---|---|
+| 切模型 | 拦截 `agent/request` 改写 | `agent.model.select()` |
+| 生效时机 | 下一次请求 | 下一次 step 准备 |
+| 违规后果 | 无 | agent loop 抛错 |
+
 ## 命令分组
 
 所有桥接 API 已注册为 `/dsh` 的子命令组：
