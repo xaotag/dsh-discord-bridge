@@ -661,16 +661,6 @@ export class AgentService {
     return true
   }
 
-  async newSession(key) {
-    const runtime = this.runtime(key)
-    const agent = runtime.agent
-    if (agent) agent.cancel({ kind: 'user' })
-    await runtime.delivery.catch(() => undefined)
-    await this.releaseRuntime(runtime)
-    await this.state.setSessionId(key, undefined)
-    const created = await this.ensureAgent(runtime)
-    return created.id
-  }
 
   async setSettings(key, settings) {
     const runtime = this.runtime(key)

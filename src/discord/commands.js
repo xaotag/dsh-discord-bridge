@@ -7,7 +7,6 @@ export const HELP_TEXT = [
   '`status` 查看当前 Channel 的 Session、模型和推理等级',
   '`list` 列出可绑定的 live / 持久化 Session',
   '`bind <sessionId>` 将当前频道绑定到已有 Session',
-  '`new` 当前 Channel 新建独立 Session',
   '`stop` 停止当前任务',
   '',
   '**/dsh model**',
@@ -31,6 +30,7 @@ export const HELP_TEXT = [
   '`help` 本帮助',
   '`ping` 检查 Bot/网关延迟',
   '`audit` 最近操作日志（不含对话内容）',
+  '`sudo <命令>` 经批准后以 root 执行（需 privd）',
 ].join('\n')
 
 const modelValueOption = (o) =>
@@ -73,7 +73,6 @@ export const dshCommand = new SlashCommandBuilder()
               .setAutocomplete(true),
           ),
       )
-      .addSubcommand((c) => c.setName('new').setDescription('创建并绑定新的独立 Session'))
       .addSubcommand((c) => c.setName('stop').setDescription('停止当前任务')),
   )
   .addSubcommandGroup((group) =>
@@ -145,14 +144,6 @@ export const dshCommand = new SlashCommandBuilder()
       .addSubcommand((c) => c.setName('help').setDescription('查看帮助'))
       .addSubcommand((c) => c.setName('ping').setDescription('检查 Bot/网关延迟'))
       .addSubcommand((c) => c.setName('audit').setDescription('查看当前频道最近的操作日志（不含对话内容）'))
-      .addSubcommand((c) =>
-        c
-          .setName('confirm')
-          .setDescription('请求一次操作确认（批准/拒绝按钮）')
-          .addStringOption((o) =>
-            o.setName('action').setDescription('要确认的操作描述').setRequired(true),
-          ),
-      )
       .addSubcommand((c) =>
         c
           .setName('sudo')
@@ -235,16 +226,13 @@ export function normalizeInteraction(interaction) {
           ? readOption(interaction, 'name')
           : command === 'bind'
             ? readOption(interaction, 'session')
-            : command === 'confirm'
-              ? readOption(interaction, 'action')
-              : command === 'sudo'
+            : command === 'sudo'
                 ? readOption(interaction, 'command')
                 : undefined
   // Backward compatibility for Discord clients still caching the pre-group
   // `/dsh status|new|model|reasoning|ask|steer|stop|help` command tree.
   const legacy = {
     status: ['session', 'status'],
-    new: ['session', 'new'],
     list: ['session', 'list'],
     bind: ['session', 'bind'],
     stop: ['task', 'stop'],
@@ -254,7 +242,6 @@ export function normalizeInteraction(interaction) {
     steer: ['task', 'steer'],
     help: ['system', 'help'],
     audit: ['system', 'audit'],
-    confirm: ['system', 'confirm'],
     sudo: ['system', 'sudo'],
     permission: ['permission', 'set'],
     'permission-show': ['permission', 'show'],
