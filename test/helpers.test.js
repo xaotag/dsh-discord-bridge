@@ -728,7 +728,7 @@ test('privileged request carries a TTL and a unique id', async () => {
 test('normalizeInteraction reads options nested under a group > subcommand', async () => {
   const { normalizeInteraction } = await import('../src/discord/commands.js')
   // Group > subcommand > option: the real Discord payload nests two levels, and
-  // flattening only one level was why `confirm`/`sudo` always saw an empty arg.
+  // flattening only one level made `/dsh system sudo` see an empty command.
   const make = (command, optionName, optionValue) => ({
     isChatInputCommand: () => true,
     commandName: 'dsh',
@@ -751,10 +751,6 @@ test('normalizeInteraction reads options nested under a group > subcommand', asy
       ],
     },
   })
-
-  const confirm = normalizeInteraction(make('confirm', 'action', '删除测试文件'))
-  assert.equal(confirm.command, 'confirm')
-  assert.equal(confirm.arg, '删除测试文件')
 
   const sudo = normalizeInteraction(make('sudo', 'command', 'systemctl restart mihomo'))
   assert.equal(sudo.command, 'sudo')

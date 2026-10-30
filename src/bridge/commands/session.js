@@ -1,5 +1,8 @@
 /**
- * `/dsh session` subcommands: status, list, bind, new, stop.
+ * `/dsh session` subcommands: status, list, bind, stop.
+ *
+ * `new` is deliberately absent: a fresh Session loses the channel's conversation,
+ * and `/dsh session bind` already covers "point this channel somewhere else".
  */
 import { extractSessionId } from '../agent-service.js'
 
@@ -67,13 +70,6 @@ export async function handleSessionCommand(
       await respond(target, `已将当前频道绑定到 DSH Session：\`${bound}\`。后续消息会注入这个 Session。`, {
         replyToMessageId,
       })
-      return true
-    }
-
-    case 'new': {
-      await agents.touch(key, meta)
-      const sessionId = await agents.newSession(key)
-      await respond(target, `已创建新的独立 Session：\`${sessionId}\``, { replyToMessageId })
       return true
     }
 

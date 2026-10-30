@@ -1,5 +1,9 @@
 /**
- * `/dsh system` subcommands: help, ping, audit, confirm, sudo.
+ * `/dsh system` subcommands: help, ping, audit, sudo.
+ *
+ * `confirm` was removed: it only ever confirmed its own description, while real
+ * confirmations come from the approval cards (`/dsh system sudo` and the Agent's
+ * own `approval/request`).
  *
  * `sudo` is the interesting one: it routes a root command through the
  * privileged daemon and reports the *real* outcome — approved-and-ran,
@@ -77,47 +81,6 @@ export async function handleSystemCommand(
           : '当前频道还没有操作记录。',
         { replyToMessageId },
       )
-      return true
-    }
-
-    case 'confirm': {
-      const action = String(arg || '').trim()
-      if (!action) {
-        await respond(target, '用法：`/dsh system confirm <要确认的操作>`', { replyToMessageId })
-        return true
-      }
-      const channelIdForApproval = target.channelId || channelId
-      const decision = await requestApproval(runtime, {
-        channelId: channelIdForApproval,
-        userId: commandUserId,
-        description: action,
-        footer: '点击按钮决定是否继续',
-      })
-      audit.record({
-        category: 'discord',
-        action: 'approval.decided',
-        status: decision === 'timeout' ? 'expired' : 'ok',
-        channelId: channelIdForApproval,
-        conversation: channelIdForApproval,
-        userId: commandUserId,
-        detail: { decision, action },
-      })
-      if (decision === 'timeout') {
-        await respond(target, '⏱ 确认已超时，操作未执行。', {
-          replyToMessageId,
-          accentColor: decisionAccent(decision),
-        })
-      } else if (decision === 'approved') {
-        await respond(target, `✅ 已批准：${action}`, {
-          replyToMessageId,
-          accentColor: decisionAccent(decision),
-        })
-      } else {
-        await respond(target, '🚫 已拒绝，操作未执行。', {
-          replyToMessageId,
-          accentColor: decisionAccent(decision),
-        })
-      }
       return true
     }
 

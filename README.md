@@ -312,7 +312,7 @@ Behavior details:
 - The preset is written into Session metadata at creation; on resume the same toolset
   is restored from the Session projection, so tools survive process restarts.
 - If the configured preset differs from the Session record, the **Session record wins**
-  and a warning is logged; use `/dsh session new` to switch.
+  and a warning is logged; a preset is fixed when the Session is created and does not hot-switch.
 - A failed preset mount never leaves the conversation without tools: it records an
   `agent/preset.mount` audit entry and falls back to the host-plane toolset.
 - `/dsh session status` shows the current agent's `Agent preset`.
@@ -412,7 +412,6 @@ All bridge APIs are registered as `/dsh` subcommand groups:
 | `/dsh system` | `help` | Help |
 | | `ping` | WebSocket / processing latency |
 | | `audit` | Recent operations for the current channel |
-| | `confirm <action>` | Post an approve/reject card and wait for the decision |
 
 ## Answering `ask_user_question`
 

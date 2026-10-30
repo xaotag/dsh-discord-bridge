@@ -270,8 +270,8 @@ DSH_DISCORD_AGENT_PRESET=standard
 
 - 新 Session 创建时把 preset 写进 Session 元数据，resume 时从 Session
   投影中还原同一套工具，不会因为进程重启而丢工具。
-- 若配置的 preset 与 Session 记录的不同，**沿用 Session 记录**并打日志，
-  需要切换请用 `/dsh session new`。
+- 若配置的 preset 与 Session 记录的不同，**沿用 Session 记录**并打日志；
+  preset 只在 Session 创建时固定，已有会话不会热切换。
 - preset 挂载失败不会让对话无工具可用：记录 `agent/preset.mount` 审计并回退到
   host 平面工具集。
 - `/dsh session status` 会显示当前 Agent 的 `Agent preset`。
@@ -422,7 +422,6 @@ step 的路由记进 `model/selection` 事件；`system-prompt/assemble` 里的 
 | `/dsh session` | `status` | 当前 Channel 的 Session、模型、推理等级 |
 | | `list` | 列出 live / 已持久化的可绑定 Session |
 | | `bind <sessionId>` | 将当前频道绑定到已有 DSH Session |
-| | `new` | 新建独立 Session |
 | | `stop` | 停止当前任务 |
 | `/dsh model` | `list` | 列出当前 provider 可用模型 |
 | | `set <provider>/<model>` | 原地切换模型，不更换 Session |
@@ -437,7 +436,6 @@ step 的路由记进 `model/selection` 事件；`system-prompt/assemble` 里的 
 | `/dsh system` | `help` | 帮助 |
 | | `ping` | WebSocket/处理延迟 |
 | | `audit` | 查看当前频道最近操作记录 |
-| | `confirm <动作>` | 发送批准/拒绝卡片并等待决定 |
 
 ## 回答 `ask_user_question`
 
