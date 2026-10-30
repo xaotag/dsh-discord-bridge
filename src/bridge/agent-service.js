@@ -290,9 +290,13 @@ export class AgentService {
   }
 
   /**
-   * Install a mutable model-selection route on the exact Agent scope.
-   * The Session is never recreated: only the next request's provider/model/
-   * reasoning route changes, so the whole conversation history is preserved.
+   * Mirror the channel's route into the system prompt on the exact Agent scope.
+   *
+   * This is presentation only: since DSH 0.2.2 the route itself is fixed during
+   * step preparation and `agent/request` may not change it (the loop throws when
+   * the proposal disagrees with the prepared selection). Switching the route is
+   * `agent.model.select()`'s job — see {@link applyModelSelection} — and this
+   * listener must never touch provider/model again.
    */
   installSelection(agentCtx, runtime) {
     if (!agentCtx?.on) return
@@ -325,22 +329,6 @@ export class AgentService {
         }
       }),
     )
-    disposers.push(
-      agentCtx.on('agent/request', async (_payload, next) => {
-        const resolved = await next()
-        const selected = selection.assembled
-        if (!selected) return resolved
-        const { reasoningEffort: _inherited, ...withoutInherited } = resolved
-        return {
-          ...withoutInherited,
-          provider: selected.provider,
-          model: selected.model,
-          ...(selected.reasoningEffort === undefined
-            ? {}
-            : { reasoningEffort: selected.reasoningEffort }),
-        }
-      }),
-    )
     runtime.selectionDispose = () => {
       for (const dispose of disposers) {
         try {
@@ -350,6 +338,26 @@ export class AgentService {
         }
       }
     }
+  }
+
+  /**
+   * Point the live Agent at a new route for its next step.
+   *
+   * `agent.model.select()` records a `model/selection` event, which the loop
+   * reads when it fixes the step's route. That is the only supported way to
+   * change models in DSH >= 0.2.2; patching `agent/request` is rejected.
+   *
+   * @returns true when the selection was recorded.
+   */
+  applyModelSelection(agent, route) {
+    if (!agent?.model || typeof agent.model.select !== 'function') return false
+    if (!route?.provider || !route?.model) return false
+    agent.model.select({
+      provider: route.provider,
+      model: route.model,
+      ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+    })
+    return true
   }
 
   routeFor(runtime) {
@@ -700,9 +708,10 @@ export class AgentService {
     Object.assign(runtime, settings)
     const route = this.routeFor(runtime)
     runtime.selection = { current: route, assembled: undefined }
-    // Force the next request to refresh its header instead of inheriting the
-    // previous effort from the last `request/header` snapshot.
+    // DSH fixes the route during step preparation, so the change has to be
+    // recorded on the Agent, not proposed during the request.
     if (runtime.agent) {
+      this.applyModelSelection(runtime.agent, route)
       this.installSelection(runtime.agent.ctx, runtime)
       return runtime.agent.id
     }

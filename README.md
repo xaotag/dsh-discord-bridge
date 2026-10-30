@@ -368,6 +368,26 @@ looks unanswered forever.
 Commands run after `interaction.defer`, so a failed reply does not undo the work: a
 `/dsh permission set` whose receipt was lost still switched the preset.
 
+## DSH 0.2.2+: model switches go through agent.model.select
+
+Since DSH 0.2.2 the request route is fixed during step preparation: an
+`agent/request` listener that proposes a different `provider/model/reasoningEffort`
+makes the agent loop throw
+
+```text
+agent/request proposed "p/m" after step preparation fixed "p/m2"; use agent.model.select()
+```
+
+`/dsh model set` and `/dsh model reasoning` therefore record the next step's route with
+`agent.model.select()` (a `model/selection` event). The provider/model variables in
+`system-prompt/assemble` remain, but they are presentation only and never route a call.
+
+| | 0.2.1 and earlier | 0.2.2+ |
+|---|---|---|
+| Switch mechanism | intercept `agent/request` | `agent.model.select()` |
+| Takes effect | next request | next step preparation |
+| Violation | none | the agent loop throws |
+
 ## Commands
 
 All bridge APIs are registered as `/dsh` subcommand groups:
